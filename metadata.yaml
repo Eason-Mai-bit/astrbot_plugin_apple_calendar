@@ -5,4 +5,4 @@ description: Apple Calendar 风格的日程日历面板 + 桌面右下角日程�
 version: 0.1.0
 astrbot_version: ">=4.5.7"
 support_platforms: []
-repo: "https://github.com/Eason-Mai-bit/astrbot_plugin_calendar"
+repo: "https://github.com/Eason-Mai-bit/astrbot_plugin_apple_calendar"
