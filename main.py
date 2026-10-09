@@ -53,7 +53,7 @@ try:  # FunctionTool SDK (>= 4.5.1)
 except Exception:  # pragma: no cover - depends on host version
     _HAS_TOOLS = False
 
-PLUGIN_NAME = "astrbot_plugin_calendar"
+PLUGIN_NAME = "astrbot_plugin_apple_calendar"
 PANEL_PATH = f"/plugin-page/{PLUGIN_NAME}/calendar"
 THEME_ORDER = ["dark", "light", "aurora", "sakura"]
 TICK_SECONDS = 15

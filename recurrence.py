@@ -180,7 +180,7 @@ def load_json_file(path: str, default: Any) -> Any:
             os.replace(path, path + ".corrupt")
         except OSError:
             pass
-        print(f"[astrbot_plugin_calendar] corrupt json {path}: {exc}")
+        print(f"[astrbot_plugin_apple_calendar] corrupt json {path}: {exc}")
         return default
 
 
