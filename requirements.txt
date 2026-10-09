@@ -1,0 +1,4 @@
+lunar_python>=1.4.0
+chinese-calendar>=1.10.0
+pillow>=10.0.0
+pystray>=0.19.5

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>日历日程</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <button id="btn-ctx" class="pill" title="返回">‹ 2026年</button>
+        <div class="spacer"></div>
+        <button id="btn-view" class="icon-btn" title="切换月/日视图">🗓</button>
+        <button id="btn-search" class="icon-btn" title="搜索日程">🔍</button>
+        <button
+          id="btn-pos"
+          class="icon-btn"
+          title="面板 / 桌面小窗切换"
+        >
+          ⧉
+        </button>
+        <button id="btn-add" class="icon-btn" title="新建日程">＋</button>
+        <div class="searchbox" id="searchbox" hidden>
+          <input
+            id="search-input"
+            type="text"
+            placeholder="搜索日程标题或备注…"
+            autocomplete="off"
+          />
+          <div class="search-results" id="search-results" hidden></div>
+        </div>
+      </header>
+
+      <div class="title-row">
+        <h1 class="big-title" id="big-title">十月</h1>
+        <button class="year-step" id="btn-year-prev" hidden>‹</button>
+        <button class="year-step" id="btn-year-next" hidden>›</button>
+      </div>
+
+      <div class="body-row">
+        <div class="views">
+          <div class="weekday-row" id="weekday-row">
+            <span>日</span><span>一</span><span>二</span><span>三</span
+            ><span>四</span><span>五</span><span>六</span>
+          </div>
+          <main class="view year-view" id="view-year" hidden>
+            <div class="year-grid" id="year-grid"></div>
+          </main>
+          <main class="view" id="view-month" hidden>
+            <div class="month-view" id="month-view"></div>
+          </main>
+          <main class="view" id="view-day" hidden>
+            <div class="day-view" id="day-view"></div>
+          </main>
+        </div>
+        <aside class="digest-aside" id="digest" hidden>
+          <div class="dg-day" id="dg-day">8</div>
+          <div class="dg-sub" id="dg-sub"></div>
+          <ul class="dg-lines" id="dg-lines"></ul>
+          <div class="dg-empty" id="dg-empty" hidden>今天暂无安排</div>
+        </aside>
+      </div>
+
+      <footer class="bottombar">
+        <button id="btn-today" class="pill">今天</button>
+        <div class="spacer"></div>
+        <div class="cal-fab-wrap">
+          <div class="cal-pop" id="cal-pop" hidden></div>
+          <button id="btn-cals" class="fab" title="显示的日历">☰</button>
+        </div>
+      </footer>
+    </div>
+
+    <div class="modal-backdrop" id="modal" hidden>
+      <form class="modal" id="ev-form">
+        <h2 id="modal-title">新建日程</h2>
+        <label
+          >标题
+          <input id="f-title" type="text" maxlength="120" required
+        /></label>
+        <label class="check"
+          ><input id="f-allday" type="checkbox" /> 全天日程</label
+        >
+        <div class="row">
+          <label
+            >开始
+            <input id="f-start" type="datetime-local" required
+          /></label>
+          <label
+            >结束
+            <input id="f-end" type="datetime-local" required
+          /></label>
+        </div>
+        <div class="row">
+          <label
+            >重复
+            <select id="f-repeat">
+              <option value="none">不重复</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+            </select>
+          </label>
+          <label
+            >提醒
+            <select id="f-remind">
+              <option value="0">不提醒</option>
+              <option value="5">提前 5 分钟</option>
+              <option value="15">提前 15 分钟</option>
+              <option value="30">提前 30 分钟</option>
+              <option value="60">提前 1 小时</option>
+            </select>
+          </label>
+        </div>
+        <div class="colors" id="f-colors"></div>
+        <label
+          >备注
+          <textarea id="f-note" rows="3" maxlength="2000"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="f-del" hidden>删除</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn" id="f-cancel">取消</button>
+          <button type="submit" class="btn primary" id="f-submit">添加</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+    <noscript><p class="fatal">此面板需要启用 JavaScript。</p></noscript>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

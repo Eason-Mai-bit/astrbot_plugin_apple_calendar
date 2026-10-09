@@ -1,0 +1,15 @@
+﻿{
+  "enable_ai_tools": {"description": "启用 AI 自然语言创建日程（注册 create/list/update/delete 工具并注入提示词）", "type": "bool", "default": true},
+  "timezone": {"description": "时区（IANA 名称），用于当前时间注入与提醒计算", "type": "string", "default": "Asia/Shanghai"},
+  "day_start_hour": {"description": "日视图时间轴起始小时（0-12）", "type": "int", "default": 6, "options": [0, 4, 6, 8]},
+  "remind_default_minutes": {"description": "新建日程默认提前提醒分钟数（AI 创建未说明时使用）", "type": "int", "default": 15, "options": [0, 5, 15, 30, 60]},
+  "all_day_remind_time": {"description": "全天日程的默认提醒时刻（当天 HH:MM）", "type": "string", "default": "09:00"},
+  "auto_show_window_on_remind": {"description": "提醒到期且桌面小窗未运行时自动拉起小窗（提醒永不丢）", "type": "bool", "default": true},
+  "window_width_ratio": {"description": "桌面小窗宽度占屏幕百分比（8-18）", "type": "int", "default": 12, "options": [8, 10, 12, 15, 18]},
+  "window_snap": {"description": "拖动桌面小窗到屏幕边缘时自动吸附（关闭后自由放置）；改动后约 2 秒内对运行中的小窗生效", "type": "bool", "default": true},
+  "window_glass": {"description": "桌面小窗液态玻璃效果（半透明磨砂背景 + 圆角，关闭后为纯色背景）；改动后约 2 秒内对运行中的小窗生效", "type": "bool", "default": true},
+  "snooze_minutes": {"description": "提醒卡片推迟的固定分钟数", "type": "int", "default": 5, "options": [5]},
+  "holiday_override_path": {"description": "可选：休/班角标兜底 JSON 路径（当 chinese-calendar 日历年份不覆盖时使用）", "type": "string", "default": ""},
+  "demo_on_start": {"description": "首次加载数据为空时自动填入示例日程（含国庆假期跨天长条测试数据）", "type": "bool", "default": true},
+  "webui_base_url": {"description": "AstrBot WebUI 根地址（桌面小窗/托盘「打开完整面板」使用）", "type": "string", "default": "http://127.0.0.1:6185"}
+}
