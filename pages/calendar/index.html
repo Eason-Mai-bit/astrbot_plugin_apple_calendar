@@ -8,11 +8,59 @@
   </head>
   <body>
     <div class="app">
+      <div class="bg-layer" id="bg-layer" hidden></div>
       <header class="topbar">
         <button id="btn-ctx" class="pill" title="返回">‹ 2026年</button>
         <div class="spacer"></div>
         <button id="btn-view" class="icon-btn" title="切换月/日视图">🗓</button>
-        <button id="btn-search" class="icon-btn" title="搜索日程">🔍</button>
+        <button id="btn-split" class="icon-btn" title="分栏：左月历 + 右日历">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <rect
+              x="2.75"
+              y="4.25"
+              width="14.5"
+              height="11.5"
+              rx="2.25"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <rect x="4.6" y="6.1" width="3.6" height="7.8" rx="1" fill="currentColor" />
+            <line
+              x1="10"
+              y1="4.6"
+              x2="10"
+              y2="15.4"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+          </svg>
+        </button>
+        <button id="btn-ai" class="icon-btn" title="AI 帮建日程">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M10 2.6 L11.7 8.3 L17.4 10 L11.7 11.7 L10 17.4 L8.3 11.7 L2.6 10 L8.3 8.3 Z"
+              fill="currentColor"
+              stroke="currentColor"
+              stroke-width="1"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button id="btn-search" class="icon-btn" title="搜索日程">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="8.6" cy="8.6" r="5.3" fill="none" stroke="currentColor" stroke-width="1.7" />
+            <line
+              x1="12.6"
+              y1="12.6"
+              x2="16.6"
+              y2="16.6"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
         <button
           id="btn-pos"
           class="icon-btn"
@@ -65,6 +113,29 @@
       <footer class="bottombar">
         <button id="btn-today" class="pill">今天</button>
         <div class="spacer"></div>
+        <button id="btn-bg" class="icon-btn" title="设置面板背景">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <rect
+              x="2.75"
+              y="4"
+              width="14.5"
+              height="12"
+              rx="2.25"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <circle cx="7.1" cy="8.3" r="1.5" fill="currentColor" />
+            <path
+              d="M4.4 14.6 L8.9 10.2 L12.2 13.4 L13.7 11.9 L15.6 14.6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
         <div class="cal-fab-wrap">
           <div class="cal-pop" id="cal-pop" hidden></div>
           <button id="btn-cals" class="fab" title="显示的日历">☰</button>
@@ -128,6 +199,56 @@
     </div>
 
     <div class="toast" id="toast" hidden></div>
+
+    <div class="modal-backdrop" id="ai-modal" hidden>
+      <div class="modal ai-modal">
+        <h2>AI 建日程</h2>
+        <div class="ai-msgs" id="ai-msgs">
+          <div class="ai-hint">
+            用自然语言描述日程，AI 会帮你创建，例如：<br />「明天下午3点到4点和张伟开会，提前15分钟提醒」
+          </div>
+        </div>
+        <form id="ai-form">
+          <div class="ai-input-row">
+            <textarea
+              id="ai-text"
+              rows="2"
+              placeholder="输入日程安排…（回车发送，Shift+回车换行）"
+            ></textarea>
+            <button type="submit" class="btn primary" id="ai-send">发送</button>
+          </div>
+        </form>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="ai-clear">清空对话</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn" id="ai-close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="bg-modal" hidden>
+      <form class="modal" id="bg-form">
+        <h2>面板背景</h2>
+        <label
+          >背景图片（PNG / JPEG / WebP / GIF，≤ 8MB）
+          <input
+            type="file"
+            id="bg-file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+        /></label>
+        <label class="bg-op-label"
+          >透明度：<span id="bg-op-val">30%</span>
+          <input type="range" id="bg-op" min="10" max="60" step="5" value="30"
+        /></label>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="bg-remove" hidden>移除背景</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn" id="bg-cancel">取消</button>
+          <button type="submit" class="btn primary" id="bg-apply">应用</button>
+        </div>
+      </form>
+    </div>
+
     <noscript><p class="fatal">此面板需要启用 JavaScript。</p></noscript>
     <script type="module" src="./app.js"></script>
   </body>

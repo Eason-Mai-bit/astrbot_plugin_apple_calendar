@@ -31,6 +31,10 @@
     cals: { festival: true, blue: true, teal: true, indigo: true, slate: true },
     editing: null,
     seq: 0,
+    split: false, // month (2) + day (1) side-by-side
+    aiHist: [], // {role, content} chat history for the AI dialog
+    aiBusy: false,
+    bg: { image: "", opacity: 0.3 },
   };
 
   // ── date helpers ────────────────────────────────────────────────
@@ -175,7 +179,7 @@
   window.addEventListener("resize", () => {
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
-      if (S.view === "month") fitPills($("#month-view"));
+      if (S.view === "month" || S.split) fitPills($("#month-view"));
     }, 150);
   });
 
@@ -591,23 +595,29 @@
 
   // ── render dispatcher ──────────────────────────────────────────
   function render() {
-    $("#view-year").hidden = S.view !== "year";
-    $("#view-month").hidden = S.view !== "month";
-    $("#view-day").hidden = S.view !== "day";
-    $("#weekday-row").style.visibility =
-      S.view === "month" ? "visible" : "hidden";
-    $("#weekday-row").style.height = S.view === "month" ? "" : "0";
-    $("#digest").hidden = !(S.view !== undefined && S.mode === "panel");
+    const v = S.split ? "month" : S.view;
+    $(".views").classList.toggle("split", S.split);
+    $("#view-year").hidden = v !== "year";
+    $("#view-month").hidden = v !== "month";
+    $("#view-day").hidden = !(S.split || S.view === "day");
+    const showWk = S.split || S.view === "month";
+    $("#weekday-row").style.visibility = showWk ? "visible" : "hidden";
+    $("#weekday-row").style.height = showWk ? "" : "0";
+    $("#digest").hidden = !(
+      S.view !== undefined &&
+      S.mode === "panel" &&
+      !S.split
+    );
 
     const ctx = $("#btn-ctx");
     const yStep = [$("#btn-year-prev"), $("#btn-year-next")];
-    if (S.view === "day") {
+    if (v === "day") {
       ctx.hidden = false;
       ctx.textContent = `‹ ${MONTH_CN[S.m - 1]}`;
       $("#big-title").hidden = false;
       $("#big-title").textContent = `${S.m}月${S.d}日`;
       yStep.forEach((b) => (b.hidden = true));
-    } else if (S.view === "month") {
+    } else if (v === "month") {
       ctx.hidden = false;
       ctx.textContent = `‹ ${S.y}年`;
       $("#big-title").hidden = false;
@@ -620,13 +630,18 @@
       yStep.forEach((b) => (b.hidden = false));
     }
 
-    if (S.view === "month") renderMonth();
-    else if (S.view === "year") renderYear();
+    if (v === "month") renderMonth();
+    else if (v === "year") renderYear();
     else renderDay();
+    if (S.split) renderDay();
   }
+
+  const syncSplitBtn = () => $("#btn-split").classList.toggle("on", S.split);
 
   async function setView(view) {
     S.view = view;
+    S.split = false;
+    syncSplitBtn();
     await refreshCurrent();
   }
 
@@ -803,8 +818,22 @@
     else if (S.view === "month") setView("year");
   });
   $("#btn-view").addEventListener("click", () => {
+    if (S.split) {
+      S.split = false;
+      syncSplitBtn();
+    }
     if (S.view === "day") setView("month");
     else setView("day");
+  });
+  $("#btn-split").addEventListener("click", async () => {
+    S.split = !S.split;
+    if (S.split && S.view !== "month") S.view = "month";
+    syncSplitBtn();
+    try {
+      await refreshCurrent();
+    } catch (e) {
+      toast(errText(e));
+    }
   });
   $("#btn-today").addEventListener("click", () => {
     const n = today();
@@ -840,7 +869,8 @@
       S.y = y;
       S.m = m;
       S.d = d;
-      setView("day");
+      if (S.split) refreshCurrent();
+      else setView("day");
     }
   });
   $("#view-year").addEventListener("click", (e) => {
@@ -942,6 +972,155 @@
     }, 250);
   });
 
+  // ── AI dialog ─────────────────────────────────────────────────
+  const AI_HINT_HTML = $("#ai-msgs").innerHTML;
+  const aiAdd = (text, cls) => {
+    const d = document.createElement("div");
+    d.className = `ai-msg ${cls}`;
+    d.textContent = text;
+    const box = $("#ai-msgs");
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+    return d;
+  };
+  const closeAi = () => {
+    $("#ai-modal").hidden = true;
+  };
+  $("#btn-ai").addEventListener("click", () => {
+    $("#ai-modal").hidden = false;
+    $("#ai-text").focus();
+  });
+  $("#ai-close").addEventListener("click", closeAi);
+  $("#ai-modal").addEventListener("click", (e) => {
+    if (e.target === $("#ai-modal")) closeAi();
+  });
+  $("#ai-clear").addEventListener("click", () => {
+    S.aiHist = [];
+    $("#ai-msgs").innerHTML = AI_HINT_HTML;
+  });
+  $("#ai-text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shift && !e.isComposing) {
+      e.preventDefault();
+      $("#ai-form").requestSubmit();
+    }
+  });
+  $("#ai-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (S.aiBusy) return;
+    const text = $("#ai-text").value.trim();
+    if (!text) return;
+    $("#ai-text").value = "";
+    $("#ai-msgs").querySelector(".ai-hint")?.remove();
+    aiAdd(text, "user");
+    S.aiHist.push({ role: "user", content: text });
+    if (S.aiHist.length > 40) S.aiHist = S.aiHist.slice(-40);
+    const think = aiAdd("思考中…", "think");
+    S.aiBusy = true;
+    $("#ai-send").disabled = true;
+    try {
+      const history = S.aiHist.slice(0, -1).slice(-10);
+      const res = await apiPost("ai", { text, history });
+      think.remove();
+      const reply = (res.reply || "").trim() || "（无回复）";
+      aiAdd(reply, "bot");
+      S.aiHist.push({ role: "assistant", content: reply });
+      if (res.events && res.events.length) {
+        toast(`AI 已创建 ${res.events.length} 个日程`);
+        await refreshCurrent();
+      }
+      if (res.errors && res.errors.length) toast(res.errors[0]);
+    } catch (err) {
+      think.remove();
+      const msg = `出错了：${errText(err)}`;
+      aiAdd(msg, "bot");
+      S.aiHist.push({ role: "assistant", content: msg });
+    } finally {
+      S.aiBusy = false;
+      $("#ai-send").disabled = false;
+      $("#ai-text").focus();
+    }
+  });
+
+  // ── background image ──────────────────────────────────────────
+  const applyBg = () => {
+    const el = $("#bg-layer");
+    if (S.bg && S.bg.image) {
+      el.style.backgroundImage = `url("${S.bg.image}")`;
+      el.style.opacity = String(S.bg.opacity ?? 0.3);
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+      el.style.backgroundImage = "";
+    }
+  };
+  const readDataURL = (file) =>
+    new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(new Error("读取图片失败"));
+      fr.readAsDataURL(file);
+    });
+  $("#btn-bg").addEventListener("click", () => {
+    $("#bg-file").value = "";
+    const op = Math.min(
+      60,
+      Math.max(10, Math.round((S.bg?.opacity ?? 0.3) * 100)),
+    );
+    $("#bg-op").value = String(op);
+    $("#bg-op-val").textContent = `${op}%`;
+    $("#bg-remove").hidden = !(S.bg && S.bg.image);
+    $("#bg-modal").hidden = false;
+  });
+  $("#bg-op").addEventListener("input", (e) => {
+    $("#bg-op-val").textContent = `${e.target.value}%`;
+  });
+  $("#bg-cancel").addEventListener("click", () => {
+    $("#bg-modal").hidden = true;
+  });
+  $("#bg-modal").addEventListener("click", (e) => {
+    if (e.target === $("#bg-modal")) $("#bg-modal").hidden = true;
+  });
+  $("#bg-remove").addEventListener("click", async () => {
+    try {
+      await apiPost("bg/clear", {});
+      S.bg = { ...S.bg, image: "" };
+      applyBg();
+      $("#bg-modal").hidden = true;
+      toast("已移除背景");
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+  $("#bg-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const opacity = Number($("#bg-op").value) / 100;
+    const file = $("#bg-file").files[0];
+    try {
+      if (file) {
+        const ok = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+        if (!ok.includes(file.type)) {
+          toast("仅支持 PNG/JPEG/WebP/GIF 图片");
+          return;
+        }
+        if (file.size > 8 * 1024 * 1024) {
+          toast("图片不能超过 8MB");
+          return;
+        }
+        const dataURL = await readDataURL(file);
+        const res = await apiPost("bg", { image: dataURL, opacity });
+        S.bg = { image: res.image || dataURL, opacity: res.opacity ?? opacity };
+      } else {
+        const res = await apiPost("bg", { opacity });
+        S.bg = { image: S.bg?.image || "", opacity: res.opacity ?? opacity };
+      }
+      applyBg();
+      $("#bg-modal").hidden = true;
+      toast("背景已更新");
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+
   // ── calendar filter popover ────────────────────────────────────
   $("#btn-cals").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1004,6 +1183,8 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!$("#modal").hidden) closeModal();
+      if (!$("#ai-modal").hidden) $("#ai-modal").hidden = true;
+      if (!$("#bg-modal").hidden) $("#bg-modal").hidden = true;
       $("#searchbox").hidden = true;
       $("#cal-pop").hidden = true;
     }
@@ -1070,6 +1251,13 @@
     } catch (e) {
       toast(errText(e));
     }
+    try {
+      const bg = await apiGet("bg");
+      S.bg = { image: bg.image || "", opacity: bg.opacity ?? 0.3 };
+    } catch (e) {
+      /* background is decorative */
+    }
+    applyBg();
     const n = today();
     S.y = n.getFullYear();
     S.m = n.getMonth() + 1;

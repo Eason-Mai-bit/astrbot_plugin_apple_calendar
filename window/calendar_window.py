@@ -226,11 +226,11 @@ class CalendarWindow:
         self.day_lbl = tk.Label(
             self.outer,
             text="",
-            font=("Microsoft YaHei UI", 40, "bold"),
+            font=("Microsoft YaHei UI", 34, "bold"),
             anchor="center",
             justify="center",
         )
-        self.day_lbl.pack(fill="x", pady=(8, 0))
+        self.day_lbl.pack(fill="x", pady=(6, 0))
         self.sub_lbl = tk.Label(
             self.outer,
             text="",
@@ -692,52 +692,110 @@ class CalendarWindow:
         for child in self.cards_frame.winfo_children():
             child.destroy()
         for card in cards[:3]:
-            row = tk.Frame(self.cards_frame, bg=t["card"], padx=6, pady=4)
-            row.pack(fill="x", pady=2)
-            info = tk.Frame(row, bg=t["card"])
-            info.pack(side="left", fill="x", expand=True)
-            tk.Label(
-                info,
-                text=str(card.get("time", "")),
-                font=("Microsoft YaHei UI", 9, "bold"),
+            card_title = str(card.get("title", ""))
+            card_time = str(card.get("time", ""))
+            key = card.get("key")
+            wrap = tk.Frame(self.cards_frame, bg=bg)
+            wrap.pack(fill="x", pady=(0, 3))
+            cv = tk.Canvas(wrap, bg=bg, highlightthickness=0, height=40)
+            cv.pack(fill="x")
+            inner = tk.Frame(cv, bg=t["card"], padx=10, pady=7)
+            # Actions are packed FIRST (right side) so a long title can never
+            # push them out of the window; info is packed last and takes rest.
+            del_btn = tk.Label(
+                inner,
+                text="✕",
+                font=("Segoe UI", 10),
                 bg=t["card"],
-                fg=t["accent"],
-            ).pack(anchor="w")
-            tk.Label(
-                info,
-                text=str(card.get("title", "")),
-                font=("Microsoft YaHei UI", 9),
-                bg=t["card"],
-                fg=t["text"],
-                anchor="w",
-            ).pack(anchor="w")
-            done_btn = tk.Label(
-                row,
-                text="✓",
-                font=("Segoe UI", 12, "bold"),
-                bg=t["accent"],
-                fg="#FFFFFF",
-                width=2,
+                fg="#E5484D",
+                padx=3,
                 cursor="hand2",
             )
-            done_btn.pack(side="right", padx=(4, 0))
-            done_btn.bind(
-                "<Button-1>", lambda _e, k=card.get("key"): self._card_action(k, "done")
+            del_btn.pack(side="right")
+            del_btn.bind(
+                "<Button-1>", lambda _e, k=key: self._card_action(k, "card_delete")
             )
             snz_btn = tk.Label(
-                row,
+                inner,
                 text="5分",
                 font=("Microsoft YaHei UI", 8),
-                bg=t["chip"],
+                bg=t["card"],
                 fg=t["sub"],
-                width=3,
+                padx=4,
                 cursor="hand2",
             )
             snz_btn.pack(side="right")
             snz_btn.bind(
-                "<Button-1>",
-                lambda _e, k=card.get("key"): self._card_action(k, "snooze"),
+                "<Button-1>", lambda _e, k=key: self._card_action(k, "snooze")
             )
+            done_cv = tk.Canvas(
+                inner,
+                width=20,
+                height=20,
+                bg=t["card"],
+                highlightthickness=0,
+                cursor="hand2",
+            )
+            done_cv.pack(side="right", padx=(5, 2))
+            done_cv.bind("<Configure>", lambda _e, c=done_cv: self._paint_done(c))
+            done_cv.bind(
+                "<Button-1>", lambda _e, k=key: self._card_action(k, "done")
+            )
+            info = tk.Frame(inner, bg=t["card"])
+            info.pack(side="left", fill="x", expand=True)
+            tk.Label(
+                info,
+                text=card_time,
+                font=("Microsoft YaHei UI", 9, "bold"),
+                bg=t["card"],
+                fg=t["accent"],
+            ).pack(anchor="w")
+            title_lbl = tk.Label(
+                info,
+                text=card_title,
+                font=("Microsoft YaHei UI", 9),
+                bg=t["card"],
+                fg=t["text"],
+                anchor="w",
+            )
+            title_lbl.pack(anchor="w", fill="x")
+            win = cv.create_window(0, 0, window=inner, anchor="nw")
+
+            def _fit_card(
+                _e=None,
+                cv=cv,
+                inner=inner,
+                win=win,
+                info=info,
+                tl=title_lbl,
+                card_title=card_title,
+                t=t,
+            ):
+                cw = cv.winfo_width()
+                if cw <= 4:
+                    return
+                cv.itemconfigure(win, width=cw)
+                ih = inner.winfo_height()
+                cv.configure(height=ih)
+                cv.coords(win, 0, 0)
+                cv.delete("cardbg")
+                self._round_rect(
+                    cv,
+                    0.5,
+                    0.5,
+                    cw - 0.5,
+                    max(1.5, ih - 0.5),
+                    10,
+                    fill=t["card"],
+                    outline="",
+                    tags="cardbg",
+                )
+                cv.tag_lower("cardbg")
+                avail = max(60, info.winfo_width() - 6)
+                tl.configure(text=self._trim_to_width(card_title, avail))
+
+            inner.bind("<Configure>", _fit_card)
+            cv.bind("<Configure>", _fit_card)
         if len(cards) > 3:
             tk.Label(
                 self.cards_frame,
@@ -812,6 +870,21 @@ class CalendarWindow:
             x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
         ]
         return cv.create_polygon(points, smooth=True, **kw)
+
+    def _paint_done(self, cv: tk.Canvas) -> None:
+        w, h = cv.winfo_width(), cv.winfo_height()
+        if w <= 2 or h <= 2:
+            return
+        t = THEMES[self.theme_name]
+        cv.delete("all")
+        cv.create_oval(1, 1, w - 2, h - 2, fill=t["accent"], outline="")
+        cv.create_text(
+            w / 2,
+            h / 2,
+            text="✓",
+            fill="#FFFFFF",
+            font=("Segoe UI", 10, "bold"),
+        )
 
     def _paint_pill(self, cv: tk.Canvas, ln: dict) -> None:
         w = cv.winfo_width()

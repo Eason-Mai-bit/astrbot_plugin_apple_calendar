@@ -7,6 +7,7 @@ the desktop mini-window process manager. Frontend lives in pages/calendar/.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import json
 import os
@@ -53,7 +54,7 @@ try:  # FunctionTool SDK (>= 4.5.1)
 except Exception:  # pragma: no cover - depends on host version
     _HAS_TOOLS = False
 
-PLUGIN_NAME = "astrbot_plugin_apple_calendar"
+PLUGIN_NAME = "astrbot_plugin_calendar"
 PANEL_PATH = f"/plugin-page/{PLUGIN_NAME}/calendar"
 THEME_ORDER = ["dark", "light", "aurora", "sakura"]
 TICK_SECONDS = 15
@@ -72,6 +73,69 @@ PROTOCOL = (
 
 def _weekday_cn(idx: int) -> str:
     return "一二三四五六日"[idx % 7]
+
+
+MAX_BG_BYTES = 8 * 1024 * 1024
+BG_FILE_NAME = "panel_bg.img"
+BG_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+AI_SYS_PROMPT = (
+    "你是日历日程助手，负责把用户的自然语言变成日程，或回答日历相关问题。\n"
+    "当前时间：{now}（时区 {tz}，周{wd}）。\n"
+    "只输出一个 JSON 对象，不要输出 JSON 之外的任何文字，不要 markdown 代码块。\n"
+    '格式：{"reply":"给用户的简短中文回复", "events":[日程对象数组]}\n'
+    "events 规则：不需要创建日程时为 []；需要创建时每个元素为 "
+    '{"title":"标题(必填,≤120字)", "start":"YYYY-MM-DD HH:MM", '
+    '"end":"YYYY-MM-DD HH:MM", "all_day":false, "repeat":"none|daily|weekly|monthly", '
+    '"remind_minutes":0, "color":"blue|teal|indigo|slate", "note":""}。\n'
+    "start 必须早于 end；end 缺省为 start 后 1 小时；用户没说年份就按当前时间推断；"
+    "没说提醒用 0；没说颜色用 blue；没说重复用 none。一次最多创建 3 个日程。\n"
+    "reply 要自然友好、一句话说明创建结果或回答内容。"
+)
+
+
+def _detect_image_mime(raw: bytes) -> str | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return None
+
+
+def _norm_opacity(value, default: float = 0.3) -> float:
+    try:
+        op = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(op, 0.05), 0.9)
+
+
+def _parse_ai_json(raw: str) -> dict | None:
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        nl = s.find("\n")
+        s = s[nl + 1:] if nl > 0 else s
+        tail = s.rstrip()
+        if tail.endswith("```"):
+            s = tail[:-3]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        obj = json.loads(s[i:j + 1])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +460,14 @@ class CalendarPlugin(Star):
     def _load_state(self) -> None:
         data = rec.load_json_file(str(self._state_path), {})
         if isinstance(data, dict):
-            for key in ("display_mode", "theme", "window_pos", "reminders", "dismissed"):
+            for key in (
+                "display_mode",
+                "theme",
+                "window_pos",
+                "reminders",
+                "dismissed",
+                "panel_bg",
+            ):
                 if key in data:
                     self._state[key] = data[key]
         if self._state.get("theme") not in THEME_ORDER:
@@ -744,10 +815,25 @@ class CalendarPlugin(Star):
                     fire = reminder_fire_time(ev, os_, self._all_day_remind)
                     if fire is None or fire > now:
                         continue
-                    if now - fire > REMINDER_FIRE_GRACE:
-                        continue
                     key = occ_key(ev["id"], os_)
                     st = rem.get(key)
+                    if st is not None and st.get("fired_at"):
+                        continue
+                    if now - fire > REMINDER_FIRE_GRACE:
+                        # Missed the normal fire window: still surface the
+                        # reminder for the whole life of the occurrence so an
+                        # in-progress or just-finished event can be checked or
+                        # removed from the mini window; long-past stays silent.
+                        oe = None
+                        try:
+                            oe = occurrence_end(ev, os_)
+                        except Exception:
+                            oe = None
+                        if oe is None:
+                            continue
+                        oe_local = oe if oe.tzinfo is None else oe.replace(tzinfo=None)
+                        if oe_local <= now:
+                            continue
                     if st is None:
                         rem[key] = {"fired_at": dt_str(now), "completed": False, "snooze_until": None}
                         changed = True
@@ -1033,6 +1119,28 @@ class CalendarPlugin(Star):
                 except KeyError as exc:
                     return {"error": str(exc)}
                 return {"ok": True}
+            if op == "card_delete":
+                # Remove the whole event behind a reminder card and close the
+                # card itself so it cannot resurface from state.
+                key = str(payload.get("key") or "")
+                event_id = key.split("|", 1)[0]
+                try:
+                    self.delete_event(event_id)
+                except KeyError as exc:
+                    return {"error": str(exc)}
+                with self._lock:
+                    st = self._state["reminders"].get(key)
+                    if st is not None:
+                        st["completed"] = True
+                        st["snooze_until"] = None
+                    else:
+                        self._state["reminders"][key] = {
+                            "fired_at": dt_str(dt.datetime.now()),
+                            "completed": True,
+                            "snooze_until": None,
+                        }
+                    self._save_state()
+                return {"ok": True}
             if op == "quit":
                 # User explicitly closed the window: stop auto-reviving the
                 # current cards, but keep them pending for later viewing.
@@ -1061,6 +1169,10 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/display", self._api_display, ["GET"], "Display mode status")
         reg(f"/{PLUGIN_NAME}/display/mode", self._api_display_mode, ["POST"], "panel/window switch")
         reg(f"/{PLUGIN_NAME}/config", self._api_config, ["GET"], "Frontend config")
+        reg(f"/{PLUGIN_NAME}/ai", self._api_ai, ["POST"], "AI create events from natural language")
+        reg(f"/{PLUGIN_NAME}/bg", self._api_bg, ["GET"], "Panel background image")
+        reg(f"/{PLUGIN_NAME}/bg", self._api_bg_set, ["POST"], "Set panel background")
+        reg(f"/{PLUGIN_NAME}/bg/clear", self._api_bg_clear, ["POST"], "Remove panel background")
 
     async def _api_events(self):
         q = request.query.get("q", "") or ""
@@ -1168,6 +1280,153 @@ class CalendarPlugin(Star):
                 "timezone": self._tz,
             }
         )
+
+    # ── AI dialog ─────────────────────────────────────────────────────────
+
+    async def _api_ai(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return error_response("内容不能为空")
+        if len(text) > 2000:
+            return error_response("输入过长（上限 2000 字）")
+        contexts: list[dict] = []
+        hist = body.get("history")
+        if isinstance(hist, list):
+            for m in hist[-10:]:
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("role")
+                content = m.get("content")
+                if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                    contexts.append({"role": role, "content": content[:4000]})
+        contexts.append({"role": "user", "content": text})
+        try:
+            prov = await self.context.get_using_provider_async()
+        except Exception as exc:
+            logger.warning("[calendar] provider lookup failed: %s", exc)
+            prov = None
+        if prov is None:
+            return error_response("尚未配置对话模型：请在控制台「供应商」中启用一个 LLM")
+        now = dt.datetime.now()
+        sys_prompt = (
+            AI_SYS_PROMPT.replace("{now}", now.strftime("%Y-%m-%d %H:%M"))
+            .replace("{tz}", self._tz)
+            .replace("{wd}", _weekday_cn(now.weekday()))
+        )
+        try:
+            resp = await prov.text_chat(contexts=contexts, system_prompt=sys_prompt)
+        except Exception as exc:
+            logger.error("[calendar] ai text_chat failed: %s", exc)
+            return error_response(f"AI 调用失败：{exc}")
+        raw = (getattr(resp, "completion_text", "") or "").strip()
+        obj = _parse_ai_json(raw)
+        if obj is None:
+            reply = raw or "（模型无回复）"
+            return json_response({"reply": reply, "events": [], "errors": []})
+        reply = str(obj.get("reply") or "").strip() or "好的"
+        created: list[dict] = []
+        errors: list[str] = []
+        evs = obj.get("events")
+        if isinstance(evs, list):
+            for ev in evs[:3]:
+                if not isinstance(ev, dict):
+                    continue
+                try:
+                    created.append(self.create_event(ev, created_by="ai"))
+                except (ValueError, TypeError) as exc:
+                    errors.append(str(exc))
+        return json_response({"reply": reply, "events": created, "errors": errors})
+
+    # ── panel background image ────────────────────────────────────────────
+
+    def _bg_file(self) -> Path:
+        return self._data_dir / BG_FILE_NAME
+
+    def _bg_state(self) -> dict:
+        with self._lock:
+            info = self._state.get("panel_bg")
+            return dict(info) if isinstance(info, dict) else {}
+
+    def _bg_store(self, info: dict) -> None:
+        with self._lock:
+            self._state["panel_bg"] = info
+            self._save_state()
+
+    def _bg_data_url(self) -> str:
+        p = self._bg_file()
+        try:
+            raw = p.read_bytes()
+        except OSError:
+            return ""
+        if not raw or len(raw) > MAX_BG_BYTES:
+            return ""
+        mime = _detect_image_mime(raw)
+        if not mime:
+            return ""
+        return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+    async def _api_bg(self):
+        info = self._bg_state()
+        image = self._bg_data_url() if info.get("enabled") else ""
+        return json_response({"image": image, "opacity": _norm_opacity(info.get("opacity"))})
+
+    async def _api_bg_set(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        info = self._bg_state()
+        if "opacity" in body:
+            try:
+                op = float(body.get("opacity"))
+            except (TypeError, ValueError):
+                return error_response("opacity 必须是数字")
+            info["opacity"] = _norm_opacity(op)
+        image = body.get("image")
+        if image:
+            if not isinstance(image, str) or not image.startswith("data:image/") or "," not in image:
+                return error_response("图片必须是 data:image/...;base64 格式")
+            try:
+                raw = base64.b64decode(image.split(",", 1)[1], validate=False)
+            except Exception:
+                return error_response("图片解码失败")
+            if not raw:
+                return error_response("图片内容为空")
+            if len(raw) > MAX_BG_BYTES:
+                return error_response("图片不能超过 8MB")
+            if _detect_image_mime(raw) is None:
+                return error_response("仅支持 PNG/JPEG/WebP/GIF 图片")
+            p = self._bg_file()
+            tmp = p.with_name(BG_FILE_NAME + ".tmp")
+            try:
+                tmp.write_bytes(raw)
+                os.replace(tmp, p)
+            except OSError as exc:
+                logger.error("[calendar] bg write failed: %s", exc)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return error_response("保存图片失败")
+            info["enabled"] = True
+            self._bg_store(info)
+            return json_response(
+                {"image": image, "opacity": _norm_opacity(info.get("opacity")), "enabled": True}
+            )
+        self._bg_store(info)
+        return json_response(
+            {"opacity": _norm_opacity(info.get("opacity")), "enabled": bool(info.get("enabled"))}
+        )
+
+    async def _api_bg_clear(self):
+        info = self._bg_state()
+        info["enabled"] = False
+        self._bg_store(info)
+        return json_response({"ok": True})
 
     # ── LLM tools ────────────────────────────────────────────────────────
 
@@ -1296,7 +1555,7 @@ class CalendarPlugin(Star):
     # ── demo data (spec §8) ──────────────────────────────────────────────
 
     def _seed_demo(self, replace: bool = False) -> int:
-        """Insert generic showcase samples. Idempotent by demo id."""
+        """Insert the spec's real schedule. Idempotent by demo id."""
         year = dt.date.today().year
 
         def d(month: int, day: int) -> str:
@@ -1304,22 +1563,29 @@ class CalendarPlugin(Star):
 
         rows: list[dict] = [
             dict(
-                id="demo_trip",
-                title="出行计划",
+                id="demo_national_vacation",
+                title="国庆假期",
                 all_day=True,
                 start=f"{d(10, 1)}T00:00:00",
-                end=f"{d(10, 3)}T23:59:00",
+                end=f"{d(10, 7)}T23:59:00",
                 color="indigo",
             ),
-            dict(id="demo_standup", title="团队例会", start=f"{d(10, 8)}T09:30:00", end=f"{d(10, 8)}T10:30:00", color="blue", note="会议室 A"),
-            dict(id="demo_review", title="阶段评审", start=f"{d(10, 8)}T14:00:00", end=f"{d(10, 8)}T15:30:00", color="teal"),
-            dict(id="demo_deadline", title="交付截止", all_day=True, start=f"{d(10, 8)}T00:00:00", end=f"{d(10, 8)}T23:59:00", color="slate"),
-            dict(id="demo_gym", title="健身训练", start=f"{d(10, 8)}T19:00:00", end=f"{d(10, 8)}T20:00:00", color="blue", remind_minutes=15),
-            dict(id="demo_submit", title="材料提交", all_day=True, start=f"{d(10, 12)}T00:00:00", end=f"{d(10, 12)}T23:59:00", color="slate"),
-            dict(id="demo_checkup", title="体检预约", start=f"{d(10, 15)}T10:00:00", end=f"{d(10, 15)}T11:00:00", color="teal", remind_minutes=30, note="需空腹"),
-            dict(id="demo_course", title="公开课", start=f"{d(10, 22)}T19:00:00", end=f"{d(10, 22)}T21:00:00", color="indigo"),
-            dict(id="demo_conf", title="行业会议", start=f"{d(11, 3)}T09:00:00", end=f"{d(11, 3)}T17:00:00", color="blue"),
-            dict(id="demo_birthday", title="朋友生日", all_day=True, start=f"{d(11, 10)}T00:00:00", end=f"{d(11, 10)}T23:59:00", color="teal"),
+            dict(id="demo_annual_day1", title="国庆节·挑战班年会Day1", start=f"{d(10, 8)}T09:00:00", end=f"{d(10, 8)}T12:00:00", color="blue", note="挑战班年会 第一天"),
+            dict(id="demo_annual_day2", title="挑战班年会Day2", start=f"{d(10, 9)}T09:00:00", end=f"{d(10, 9)}T12:00:00", color="blue", note="挑战班年会 第二天"),
+            dict(id="demo_thought_report", title="提交思想报告", start=f"{d(10, 9)}T18:00:00", end=f"{d(10, 9)}T19:00:00", color="slate"),
+            dict(id="demo_self_study", title="个人学习总结", start=f"{d(10, 10)}T14:00:00", end=f"{d(10, 10)}T16:00:00", color="teal"),
+            dict(id="demo_hdp_closing", title="高党结业仪式", start=f"{d(10, 11)}T09:00:00", end=f"{d(10, 11)}T11:00:00", color="indigo"),
+            dict(id="demo_hdp_discuss", title="高党集体讨论", start=f"{d(10, 11)}T14:00:00", end=f"{d(10, 11)}T16:00:00", color="indigo"),
+            dict(id="demo_writing_a1", title="写作Assignment1", all_day=True, start=f"{d(10, 12)}T00:00:00", end=f"{d(10, 12)}T23:59:00", color="slate"),
+            dict(id="demo_bio_midterm", title="生化期中", start=f"{d(10, 14)}T09:00:00", end=f"{d(10, 14)}T11:00:00", color="blue", remind_minutes=15, note="带学生证"),
+            dict(id="demo_writing_a2", title="写作Assignment2", all_day=True, start=f"{d(10, 19)}T00:00:00", end=f"{d(10, 19)}T23:59:00", color="slate"),
+            dict(id="demo_physio_report", title="生理学读书报告", start=f"{d(10, 20)}T14:00:00", end=f"{d(10, 20)}T16:00:00", color="teal"),
+            dict(id="demo_bio_pre", title="生化讨论pre", start=f"{d(10, 21)}T15:00:00", end=f"{d(10, 21)}T17:00:00", color="blue", remind_minutes=30),
+            dict(id="demo_bio_handout", title="生化实验讲义", all_day=True, start=f"{d(11, 1)}T00:00:00", end=f"{d(11, 1)}T23:59:00", color="slate"),
+            dict(id="demo_physics_lab", title="普物实验", start=f"{d(11, 2)}T14:00:00", end=f"{d(11, 2)}T17:00:00", color="teal"),
+            dict(id="demo_marx_pre", title="马原哲学pre", start=f"{d(11, 3)}T09:00:00", end=f"{d(11, 3)}T10:30:00", color="indigo"),
+            dict(id="demo_bio_midterm2", title="生化期中", start=f"{d(11, 6)}T09:00:00", end=f"{d(11, 6)}T11:00:00", color="blue", remind_minutes=15),
+            dict(id="demo_physio_lit", title="生理学问题文献讲述", start=f"{d(11, 10)}T09:00:00", end=f"{d(11, 10)}T10:00:00", color="teal"),
         ]
         now = dt_str(dt.datetime.now())
         count = 0

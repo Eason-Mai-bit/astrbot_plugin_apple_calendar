@@ -1,8 +1,8 @@
-# 日历日程（astrbot_plugin_apple_calendar）
+# 日历日程（astrbot_plugin_calendar）
 
 Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提醒卡片 + 自然语言增删查改日程，纯本地运行，内置农历 / 节气 / 休班角标数据。
 
-- 版本：0.1.0
+- 版本：0.2.0
 - 作者：Eason-Mai-bit
 - 要求：AstrBot >= 4.5.7（AI 工具需 >= 4.5.1 的 FunctionTool SDK）
 - 平台：面板全平台可用；桌面小窗面向 Windows（圆角 / 液态玻璃使用 Win32 API）
@@ -45,7 +45,7 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 
 ## 安装
 
-1. 将本目录放入 `data/plugins/astrbot_plugin_apple_calendar/`（或通过 WebUI 插件管理安装）
+1. 将本目录放入 `data/plugins/astrbot_plugin_calendar/`（或通过 WebUI 插件管理安装）
 2. 安装依赖（WebUI 安装时会自动执行）：
 
    ```bash
@@ -79,7 +79,7 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 ## 面板入口
 
 - WebUI 侧边栏 → 插件页面 →「日历日程」
-- 直达地址：`http://127.0.0.1:6185/#/plugin-page/astrbot_plugin_apple_calendar/calendar`（按实际端口）
+- 直达地址：`http://127.0.0.1:6185/#/plugin-page/astrbot_plugin_calendar/calendar`（按实际端口）
 
 显示模式（面板 / 桌面小窗）通过面板顶栏 ⧉ 按钮切换，状态持久化在 `state.json`。
 
@@ -89,16 +89,17 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 
 | 方法 | 路由 | 说明 |
 | --- | --- | --- |
-| GET | `/astrbot_plugin_apple_calendar/events` | 按 `from`/`to` 列日程，或 `q` 搜索 |
-| POST | `/astrbot_plugin_apple_calendar/events` | 创建日程 |
-| POST | `/astrbot_plugin_apple_calendar/events/update` | 修改日程 |
-| POST | `/astrbot_plugin_apple_calendar/events/delete` | 删除日程 |
-| GET | `/astrbot_plugin_apple_calendar/digest` | 当日摘要（小窗用，含 `key`/`total`） |
-| GET | `/astrbot_plugin_apple_calendar/reminders` | 待处理提醒卡片 |
-| POST | `/astrbot_plugin_apple_calendar/reminders` | 提醒卡片 done / snooze |
-| GET | `/astrbot_plugin_apple_calendar/display` | 显示模式状态 |
-| POST | `/astrbot_plugin_apple_calendar/display/mode` | 切换 `panel` / `window` |
-| GET | `/astrbot_plugin_apple_calendar/config` | 前端配置 |
+| GET | `/astrbot_plugin_calendar/events` | 按 `from`/`to` 列日程，或 `q` 搜索 |
+| POST | `/astrbot_plugin_calendar/events` | 创建日程 |
+| POST | `/astrbot_plugin_calendar/events/update` | 修改日程 |
+| POST | `/astrbot_plugin_calendar/events/delete` | 删除日程 |
+| GET | `/astrbot_plugin_calendar/digest` | 当日摘要（小窗用，含 `key`/`total`） |
+| GET | `/astrbot_plugin_calendar/reminders` | 待处理提醒卡片 |
+| POST | `/astrbot_plugin_calendar/reminders` | 提醒卡片 done / snooze |
+| GET | `/astrbot_plugin_calendar/display` | 显示模式状态 |
+| POST | `/astrbot_plugin_calendar/display/mode` | 切换 `panel` / `window` |
+| GET | `/astrbot_plugin_calendar/config` | 前端配置 |
+| POST | `/astrbot_plugin_calendar/demo` | （重新）写入示例数据 |
 
 桌面小窗走独立的本机通道（`127.0.0.1` 随机端口 + 运行期令牌）：`GET /state` 拉取摘要与配置，`POST /action` 回传 `pos`（位置）、`cycle_theme`、`toggle_snap`（吸附开关）、`done`/`snooze`（提醒卡）、`ev_done`/`ev_delete`（胶囊操作）、`quit`（可带 `panel` 同时回面板）。
 
@@ -112,12 +113,13 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 ## 目录结构
 
 ```
-astrbot_plugin_apple_calendar/
+astrbot_plugin_calendar/
 ├── main.py               # 存储、Web API、LLM 工具、提醒调度、小窗进程管理
 ├── lunar.py              # 农历 / 节日 / 休班 封装（全部可降级）
 ├── recurrence.py         # 重复规则、时间解析、提醒时刻计算
 ├── pages/calendar/       # 面板前端（index.html / app.js / style.css）
 ├── window/calendar_window.py  # 桌面小窗（tkinter，独立子进程）
+├── data/                 # t2i 模板等运行资源
 ├── _conf_schema.json     # 配置结构
 ├── requirements.txt
 └── metadata.yaml
