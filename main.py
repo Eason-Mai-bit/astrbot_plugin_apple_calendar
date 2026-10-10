@@ -1168,6 +1168,7 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminder_action, ["POST"], "done/snooze card")
         reg(f"/{PLUGIN_NAME}/display", self._api_display, ["GET"], "Display mode status")
         reg(f"/{PLUGIN_NAME}/display/mode", self._api_display_mode, ["POST"], "panel/window switch")
+        reg(f"/{PLUGIN_NAME}/display/show", self._api_display_show, ["POST"], "Show desktop window (no mode change)")
         reg(f"/{PLUGIN_NAME}/config", self._api_config, ["GET"], "Frontend config")
         reg(f"/{PLUGIN_NAME}/ai", self._api_ai, ["POST"], "AI create events from natural language")
         reg(f"/{PLUGIN_NAME}/bg", self._api_bg, ["GET"], "Panel background image")
@@ -1265,6 +1266,13 @@ class CalendarPlugin(Star):
         else:
             self._kill_window()
         return json_response({"ok": True, "mode": mode})
+
+    async def _api_display_show(self):
+        # Spawn the desktop mini window without persisting display_mode,
+        # so the user's panel/window preference is left untouched.
+        self._spawn_window()
+        running = self._win_proc is not None and self._win_proc.poll() is None
+        return json_response({"ok": running, "window_running": running})
 
     async def _api_config(self):
         with self._lock:

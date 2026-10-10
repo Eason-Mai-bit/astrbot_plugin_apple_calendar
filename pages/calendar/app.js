@@ -341,8 +341,9 @@
     return sorted;
   }
 
-  function renderDay() {
-    const root = $("#day-view");
+  function renderDay(target) {
+    const root = typeof target === "string" ? $(target) : target || $("#view-day");
+    const keepScroll = root.querySelector(".hours")?.scrollTop || 0;
     root.innerHTML = "";
     const date = new Date(S.y, S.m - 1, S.d);
     const now = today();
@@ -516,6 +517,7 @@
     }
     hours.appendChild(inner);
     root.appendChild(hours);
+    if (keepScroll) hours.scrollTop = keepScroll;
   }
 
   // ── day view drag / resize ─────────────────────────────────────
@@ -593,8 +595,92 @@
     });
   }
 
+  // ── day sidebar (desktop client style, elongated) ───────────────
+  let sideSel = { id: null, confirmDel: false };
+
+  function renderSide() {
+    const root = $("#day-side");
+    root.innerHTML = "";
+    const date = new Date(S.y, S.m - 1, S.d);
+    const key = dayKey(date);
+    const meta = S.range.meta[key] || {};
+    const isToday = key === dayKey(today());
+
+    const num = document.createElement("div");
+    num.className = "ds-num";
+    num.textContent = String(S.d);
+    root.appendChild(num);
+
+    const sub = document.createElement("div");
+    sub.className = "ds-sub";
+    const lunar = meta.lunar || "";
+    sub.textContent = lunar
+      ? `${WEEK_CN[date.getDay()]} · ${lunar}`
+      : WEEK_CN[date.getDay()];
+    root.appendChild(sub);
+
+    const evs = (S.range.events || [])
+      .filter((e) => String(e.start).slice(0, 10) === key)
+      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+    if (sideSel.id && !evs.some((e) => e.id === sideSel.id)) {
+      sideSel = { id: null, confirmDel: false };
+    }
+
+    const list = document.createElement("div");
+    list.className = "ds-list";
+    if (!evs.length) {
+      const empty = document.createElement("div");
+      empty.className = "ds-empty";
+      empty.textContent = isToday ? "今天暂无安排" : "当天暂无安排";
+      list.appendChild(empty);
+    }
+    for (const e of evs) {
+      const pill = document.createElement("div");
+      pill.className = "ds-pill" + (e.done ? " done" : "");
+      if (sideSel.id === e.id) pill.classList.add("sel");
+      pill.dataset.id = e.id;
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent =
+        e.all_day || String(e.start).slice(0, 10) !== key
+          ? "全天"
+          : String(e.start).slice(11, 16);
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = e.title || "(无标题)";
+      pill.appendChild(t);
+      pill.appendChild(n);
+      if (sideSel.id === e.id) {
+        const ok = document.createElement("button");
+        ok.type = "button";
+        ok.className = "ds-act ok";
+        ok.dataset.act = "done";
+        ok.textContent = "✓";
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "ds-act del" + (sideSel.confirmDel ? " armed" : "");
+        del.dataset.act = "del";
+        del.textContent = "✕";
+        pill.appendChild(ok);
+        pill.appendChild(del);
+      }
+      list.appendChild(pill);
+    }
+    root.appendChild(list);
+
+    const status = document.createElement("div");
+    status.className = "ds-status";
+    status.textContent = sideSel.id
+      ? sideSel.confirmDel
+        ? "再点 ✕ 一次确认删除"
+        : "点 ✓ 标记完成 · ✕ 删除"
+      : "点击日程可标记完成或删除";
+    root.appendChild(status);
+  }
+
   // ── render dispatcher ──────────────────────────────────────────
   function render() {
+    const sy = window.scrollY || document.documentElement.scrollTop || 0;
     const v = S.split ? "month" : S.view;
     $(".views").classList.toggle("split", S.split);
     $("#view-year").hidden = v !== "year";
@@ -603,11 +689,6 @@
     const showWk = S.split || S.view === "month";
     $("#weekday-row").style.visibility = showWk ? "visible" : "hidden";
     $("#weekday-row").style.height = showWk ? "" : "0";
-    $("#digest").hidden = !(
-      S.view !== undefined &&
-      S.mode === "panel" &&
-      !S.split
-    );
 
     const ctx = $("#btn-ctx");
     const yStep = [$("#btn-year-prev"), $("#btn-year-next")];
@@ -632,8 +713,19 @@
 
     if (v === "month") renderMonth();
     else if (v === "year") renderYear();
-    else renderDay();
-    if (S.split) renderDay();
+    if (S.split || v === "day") {
+      $("#day-side").hidden = !S.split;
+      $("#day-view").hidden = S.split;
+      if (S.split) renderSide();
+      else renderDay("#day-view");
+    }
+
+    // Re-rendering collapses scrollable content; restore the page scroll
+    // so drag/refresh never yanks the whole page back to the top.
+    if (sy > 0) {
+      window.scrollTo(0, sy);
+      requestAnimationFrame(() => window.scrollTo(0, sy));
+    }
   }
 
   const syncSplitBtn = () => $("#btn-split").classList.toggle("on", S.split);
@@ -700,7 +792,7 @@
       S.d = Number(item.start.slice(8, 10));
       S.m = Number(item.start.slice(5, 7));
       S.y = Number(item.start.slice(0, 4));
-      setView("day");
+      refreshCurrent();
       return;
     }
     S.editing = item;
@@ -869,8 +961,7 @@
       S.y = y;
       S.m = m;
       S.d = d;
-      if (S.split) refreshCurrent();
-      else setView("day");
+      refreshCurrent();
     }
   });
   $("#view-year").addEventListener("click", (e) => {
@@ -889,7 +980,7 @@
       setView("month");
     }
   });
-  $("#view-day").addEventListener("click", (e) => {
+  const onDayClick = (e) => {
     const ws = e.target.closest(".ws-cell");
     if (ws) {
       const [y, m, d] = ws.dataset.date.split("-").map(Number);
@@ -910,6 +1001,43 @@
     if (e.target.closest(".evblock")) return; // handled by drag pointerup
     const line = e.target.closest(".hourline");
     if (line) openCreate(iso(S.y, S.m, S.d), Number(line.dataset.hour));
+  };
+  $("#view-day").addEventListener("click", onDayClick);
+  $("#day-side").addEventListener("click", async (e) => {
+    const act = e.target.closest(".ds-act");
+    const pill = e.target.closest(".ds-pill");
+    if (!pill?.dataset.id) return;
+    const id = pill.dataset.id;
+    const ev = (S.range.events || []).find((x) => x.id === id);
+    if (!ev) return;
+    if (act?.dataset.act === "done") {
+      try {
+        await apiPost("events/update", { id, done: !ev.done });
+        sideSel = { id: null, confirmDel: false };
+        await refreshCurrent();
+      } catch (err) {
+        toast(errText(err));
+      }
+      return;
+    }
+    if (act?.dataset.act === "del") {
+      if (!sideSel.confirmDel) {
+        sideSel.confirmDel = true;
+        renderSide();
+        return;
+      }
+      try {
+        await apiPost("events/delete", { id });
+        sideSel = { id: null, confirmDel: false };
+        await refreshCurrent();
+      } catch (err) {
+        toast(errText(err));
+      }
+      return;
+    }
+    if (sideSel.id === id) sideSel = { id: null, confirmDel: false };
+    else sideSel = { id, confirmDel: false };
+    renderSide();
   });
 
   // ── search ─────────────────────────────────────────────────────
@@ -1199,39 +1327,10 @@
       S.mode = next;
       render();
       toast(next === "window" ? "已切换到桌面小窗" : "已切回面板");
-      refreshDigest();
     } catch (err) {
       toast(errText(err));
     }
   });
-
-  // ── digest aside ───────────────────────────────────────────────
-  async function refreshDigest() {
-    try {
-      const d = await apiGet("digest");
-      $("#dg-day").textContent = d.day;
-      $("#dg-sub").textContent = `${d.weekday} · ${d.lunar}`;
-      const ul = $("#dg-lines");
-      ul.innerHTML = "";
-      const lines = d.lines || [];
-      $("#dg-empty").hidden = lines.length > 0;
-      for (const ln of lines) {
-        const li = document.createElement("li");
-        if (ln.done) li.classList.add("done");
-        const t = document.createElement("span");
-        t.className = "t";
-        t.textContent = ln.time;
-        const n = document.createElement("span");
-        n.className = "n";
-        n.textContent = ln.title;
-        li.appendChild(t);
-        li.appendChild(n);
-        ul.appendChild(li);
-      }
-    } catch (e) {
-      // digest is decorative; ignore transient failures
-    }
-  }
 
   // ── boot ───────────────────────────────────────────────────────
   (async function boot() {
@@ -1263,16 +1362,13 @@
     S.m = n.getMonth() + 1;
     S.d = n.getDate();
     await refreshCurrent();
-    refreshDigest();
     setInterval(() => {
       if (document.hidden || document.querySelector(".evblock.dragging")) return;
       refreshCurrent();
-      refreshDigest();
     }, 60000);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
         refreshCurrent();
-        refreshDigest();
       }
     });
   })();

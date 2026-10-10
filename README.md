@@ -2,7 +2,7 @@
 
 Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提醒卡片 + 自然语言增删查改日程，纯本地运行，内置农历 / 节气 / 休班角标数据。
 
-- 版本：0.2.0
+- 版本：0.2.1
 - 作者：Eason-Mai-bit
 - 要求：AstrBot >= 4.5.7（AI 工具需 >= 4.5.1 的 FunctionTool SDK）
 - 平台：面板全平台可用；桌面小窗面向 Windows（圆角 / 液态玻璃使用 Win32 API）
@@ -14,6 +14,7 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 - 年 / 月 / 日三种视图，月视图统一「日期在上、日程在下」，超出单元格高度自动折叠为 `+N`
 - 事件胶囊按颜色分组（blue / teal / indigo / slate），支持全天日程、跨天重复（每天 / 每周 / 每月）
 - 农历日期、干支、节气、传统节日自动显示；休 / 班角标来自 `chinese-calendar`
+- 分屏模式下右侧为桌面客户端风格的日程侧栏（大日期 + 日程胶囊，点选后可 ✓ 完成 / 🗑 二次确认删除）
 - 关键词搜索、按日历显隐过滤（☰）、点击日期进入日视图、今天快捷返回
 - 打开 / 切换视图与弹窗均有 ≤200ms 的 opacity/transform 动画
 
@@ -98,6 +99,7 @@ Apple Calendar 风格的日程日历面板 + 桌面右下角日程小窗 + 提�
 | POST | `/astrbot_plugin_calendar/reminders` | 提醒卡片 done / snooze |
 | GET | `/astrbot_plugin_calendar/display` | 显示模式状态 |
 | POST | `/astrbot_plugin_calendar/display/mode` | 切换 `panel` / `window` |
+| POST | `/astrbot_plugin_calendar/display/show` | 仅拉起桌面小窗（不改显示模式偏好） |
 | GET | `/astrbot_plugin_calendar/config` | 前端配置 |
 | POST | `/astrbot_plugin_calendar/demo` | （重新）写入示例数据 |
 
