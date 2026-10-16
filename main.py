@@ -21,8 +21,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
@@ -45,7 +43,6 @@ try:  # FunctionTool SDK (>= 4.5.1)
     from pydantic import Field
     from pydantic.dataclasses import dataclass as pyd_dataclass
 
-    from astrbot.core.agent.message import TextPart
     from astrbot.core.agent.run_context import ContextWrapper
     from astrbot.core.agent.tool import FunctionTool, ToolExecResult
     from astrbot.core.astr_agent_context import AstrAgentContext
@@ -62,7 +59,7 @@ REMINDER_FIRE_GRACE = dt.timedelta(minutes=10)
 REMINDER_CARD_MAX_AGE = dt.timedelta(days=7)
 
 PROTOCOL = (
-    "交互协议（必须遵守）：1) 只问缺失字段，用户已说清的绝不再问；"
+    "仅在调用本工具时遵循以下流程：1) 只问缺失字段，用户已说清的绝不再问；"
     "2) 起止时间缺失必须询问，颜色/备注/提醒/重复等可选字段未说明则用默认值，"
     "并用一句话说明「未说明则用默认」，不要逐项追问；3) 所有缺失字段在同一条消息里一次问完；"
     "4) 问齐后复述摘要并等用户确认（例：「→ 明早8:00 交作业，每天重复，提前15分钟提醒，确认添加？」），"
@@ -782,6 +779,20 @@ class CalendarPlugin(Star):
                 continue
             if now - occ_start > REMINDER_CARD_MAX_AGE:
                 continue
+            # The mini window always renders today's date block; surfacing a
+            # leftover occurrence from a previous day under today's date reads
+            # as a mismatch. A due snooze is exempt: the snooze time, not the
+            # occurrence day, is what the user asked to be reminded at.
+            snoozed_due = False
+            if st.get("snooze_until"):
+                try:
+                    snoozed_due = (
+                        parse_datetime(st["snooze_until"]).date() == now.date()
+                    )
+                except ValueError:
+                    pass
+            if occ_start.date() < now.date() and not snoozed_due:
+                continue
             ev = self._find_event(event_id)
             if ev is None:
                 continue
@@ -970,7 +981,11 @@ class CalendarPlugin(Star):
                     self._send(401, {"error": "unauthorized"})
                     return
                 if self.path.startswith("/state"):
-                    self._send(200, plugin._window_state())
+                    try:
+                        self._send(200, plugin._window_state())
+                    except Exception:
+                        logger.exception("[calendar] window state build failed")
+                        self._send(500, {"error": "state build failed"})
                     return
                 self._send(404, {"error": "not found"})
 
@@ -1168,7 +1183,6 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminder_action, ["POST"], "done/snooze card")
         reg(f"/{PLUGIN_NAME}/display", self._api_display, ["GET"], "Display mode status")
         reg(f"/{PLUGIN_NAME}/display/mode", self._api_display_mode, ["POST"], "panel/window switch")
-        reg(f"/{PLUGIN_NAME}/display/show", self._api_display_show, ["POST"], "Show desktop window (no mode change)")
         reg(f"/{PLUGIN_NAME}/config", self._api_config, ["GET"], "Frontend config")
         reg(f"/{PLUGIN_NAME}/ai", self._api_ai, ["POST"], "AI create events from natural language")
         reg(f"/{PLUGIN_NAME}/bg", self._api_bg, ["GET"], "Panel background image")
@@ -1266,13 +1280,6 @@ class CalendarPlugin(Star):
         else:
             self._kill_window()
         return json_response({"ok": True, "mode": mode})
-
-    async def _api_display_show(self):
-        # Spawn the desktop mini window without persisting display_mode,
-        # so the user's panel/window preference is left untouched.
-        self._spawn_window()
-        running = self._win_proc is not None and self._win_proc.poll() is None
-        return json_response({"ok": running, "window_running": running})
 
     async def _api_config(self):
         with self._lock:
@@ -1454,6 +1461,11 @@ class CalendarPlugin(Star):
         self.context.add_llm_tools(*self._tools)
         self._refresh_tool_time()
 
+    # Tools that resolve relative time ("明天"/"下周三") or list by date need the
+    # current clock; mutation-by-id tools do not, so we skip the suffix there to
+    # avoid signalling calendar relevance on every turn.
+    _TIME_SENSITIVE_TOOLS = frozenset({"create_event", "list_events"})
+
     def _refresh_tool_time(self) -> None:
         if not self._tools:
             return
@@ -1462,6 +1474,8 @@ class CalendarPlugin(Star):
             f"（当前时间 {now:%Y-%m-%d %H:%M} 周{_weekday_cn(now.weekday())}，时区 {self._tz}）"
         )
         for tool in self._tools:
+            if tool.name not in self._TIME_SENSITIVE_TOOLS:
+                continue
             base = self._tool_base.get(tool.name, tool.description)
             try:
                 tool.description = base + suffix
@@ -1536,29 +1550,6 @@ class CalendarPlugin(Star):
         except KeyError as exc:
             return f"删除失败：{exc}"
         return f"已删除日程 id={event_id}"
-
-    @filter.on_llm_request()
-    async def inject_calendar_hint(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        """Inject schedule-creation guidance + current time for the main agent."""
-        if not self._ai_enabled:
-            return
-        now = dt.datetime.now()
-        text = (
-            f"【日历日程】当前时间 {now:%Y-%m-%d %H:%M} 周{_weekday_cn(now.weekday())}（{self._tz}）。"
-            "当用户提到「提醒我 / 添加日程 / 记录行程 / 安排 / 定个...」等意图时："
-            "用 create_event 创建日程（严格遵循该工具描述里的「问齐→复述→等确认→再执行」协议）；"
-            "list_events 查询已有日程；update_event / delete_event 修改删除（执行前同样先向用户确认）。"
-            "起止时间缺失必须追问；颜色/备注/提醒/重复等可选字段未说明用默认值，不要逐项追问。"
-        )
-        try:
-            part = TextPart(text=text)
-            try:
-                part = part.mark_as_temp()
-            except Exception:
-                pass
-            req.extra_user_content_parts.append(part)
-        except Exception as exc:
-            logger.debug("[calendar] injection failed: %s", exc)
 
     # ── demo data (spec §8) ──────────────────────────────────────────────
 

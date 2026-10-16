@@ -42,7 +42,8 @@ except Exception:  # pragma: no cover - depends on deployed environment
     _HAS_TRAY = False
 
 POLL_MS = 2000
-FAIL_EXIT_AFTER = 15  # consecutive connection failures (~30s) -> exit
+FAIL_EXIT_AFTER = 15  # consecutive connection failures after a successful connect (~30s) -> exit
+CONNECT_GRACE_MS = 15000  # before first successful connect, retry this long then give up (dead port)
 THEME_ORDER = ["dark", "light", "aurora", "sakura"]  # must match main.py
 ACTIONS_W = 46  # reserved right-side width of pill action icons when selected
 
@@ -112,6 +113,8 @@ class CalendarWindow:
         self.start_x = args.x
         self.start_y = args.y
         self.failures = 0
+        self.ever_connected = False
+        self.start_ms = int(time.monotonic() * 1000)
         self.last_state = None
         self.drag_origin: tuple[int, int] | None = None
         self.drag_press: tuple[int, int, float] | None = None  # x, y, t (click vs drag)
@@ -648,12 +651,22 @@ class CalendarWindow:
     def _poll(self) -> None:
         state = self._request("/state")
         if state is None:
-            self.failures += 1
-            if self.failures >= FAIL_EXIT_AFTER:
-                self.root.destroy()
-                return
+            if not self.ever_connected:
+                # Never reached the loopback yet (plugin still starting, or this
+                # window was pointed at a dead port after a reload). Retry within
+                # the grace window so a slow start still connects; past it, give
+                # up instead of lingering as a blank window.
+                if int(time.monotonic() * 1000) - self.start_ms >= CONNECT_GRACE_MS:
+                    self.root.destroy()
+                    return
+            else:
+                self.failures += 1
+                if self.failures >= FAIL_EXIT_AFTER:
+                    self.root.destroy()
+                    return
         else:
             self.failures = 0
+            self.ever_connected = True
             self._render(state)
         self.root.after(POLL_MS, self._poll)
 

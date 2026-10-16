@@ -1,15 +1,14 @@
-# Python
+# Never publish runtime data / local config copies
+data/
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
+*.pyc
+events.json
+state.json
+panel_bg.img
+panel_bg.img.tmp
 
-# OS / editor
+# editor / os noise
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
-*.swp
-
-# Logs & local scratch
-*.log
-.tmp/
