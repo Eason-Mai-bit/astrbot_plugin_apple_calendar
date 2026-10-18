@@ -12,7 +12,6 @@
       <header class="topbar">
         <button id="btn-ctx" class="pill" title="返回">‹ 2026年</button>
         <div class="spacer"></div>
-        <button id="btn-view" class="icon-btn" title="切换月/日视图">🗓</button>
         <button id="btn-split" class="icon-btn" title="分栏：左月历 + 右日历">
           <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
             <rect
@@ -108,6 +107,21 @@
       <footer class="bottombar">
         <button id="btn-today" class="pill">今天</button>
         <div class="spacer"></div>
+        <button id="btn-color" class="icon-btn" title="自定义配色">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M10 2.8c-4 0-7.2 3-7.2 6.9 0 3.6 2.7 6.5 6.1 6.5 1.3 0 1.9-.8 1.9-1.6 0-.9-.7-1.3-.7-2.1 0-.7.6-1.2 1.4-1.2h1.5c2.4 0 4.2-1.7 4.2-4C17.2 5 14 2.8 10 2.8z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
+            <circle cx="6.4" cy="8.4" r="1.05" fill="currentColor" />
+            <circle cx="9.6" cy="6.1" r="1.05" fill="currentColor" />
+            <circle cx="13.2" cy="7.3" r="1.05" fill="currentColor" />
+            <circle cx="14.4" cy="10.6" r="1.05" fill="currentColor" />
+          </svg>
+        </button>
         <button id="btn-bg" class="icon-btn" title="设置面板背景">
           <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
             <rect
@@ -145,6 +159,16 @@
           >标题
           <input id="f-title" type="text" maxlength="120" required
         /></label>
+        <label
+          >谁的日程
+          <input
+            id="f-owner"
+            type="text"
+            maxlength="32"
+            placeholder="可留空，如：我、室友、全家"
+            list="f-owner-list"
+        /></label>
+        <datalist id="f-owner-list"></datalist>
         <label class="check"
           ><input id="f-allday" type="checkbox" /> 全天日程</label
         >
@@ -240,6 +264,37 @@
           <div class="spacer"></div>
           <button type="button" class="btn" id="bg-cancel">取消</button>
           <button type="submit" class="btn primary" id="bg-apply">应用</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal-backdrop" id="color-modal" hidden>
+      <form class="modal" id="color-form">
+        <h2>自定义配色</h2>
+        <div class="color-row">
+          <span class="color-row-label">主色</span>
+          <div class="color-swatches" id="sw-primary"></div>
+          <input type="color" id="color-primary" value="#2563eb" />
+        </div>
+        <div class="color-row">
+          <span class="color-row-label">辅助色</span>
+          <div class="color-swatches" id="sw-secondary"></div>
+          <input type="color" id="color-secondary" value="#3e6bb0" />
+        </div>
+        <div class="color-preview" id="color-preview" title="分类色将由辅助色派生"></div>
+        <label class="color-extract"
+          >从图片提取配色（PNG / JPEG / WebP / GIF，≤ 8MB）
+          <input
+            type="file"
+            id="color-file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+          />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="color-reset">恢复默认</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn" id="color-cancel">取消</button>
+          <button type="submit" class="btn primary" id="color-apply">应用</button>
         </div>
       </form>
     </div>

@@ -14,6 +14,9 @@ DATE_FMT = "%Y-%m-%d"
 DATETIME_FMT = "%Y-%m-%dT%H:%M:%S"
 
 REPEAT_CHOICES = ("none", "daily", "weekly", "monthly")
+# repeat_until (optional event key, ISO date or datetime) stops repeating
+# expansions: occurrences starting after it are not produced. Absent/blank =
+# repeats forever, so legacy events keep the old behavior.
 COLOR_CHOICES = ("blue", "teal", "indigo", "slate")
 
 
@@ -55,6 +58,23 @@ class RecurrenceError(ValueError):
     pass
 
 
+def parse_repeat_until(value: Any) -> Optional[_dt.datetime]:
+    """Event repeat_until -> datetime cap (None = no cap / invalid / absent).
+
+    A date-only value is inclusive through the end of that day (23:59:59).
+    """
+    s = str(value or "").strip()
+    if not s or s.lower() in ("none", "null"):
+        return None
+    try:
+        until = parse_datetime(s)
+    except ValueError:
+        return None
+    if len(s) <= 10:
+        until = until.replace(hour=23, minute=59, second=59)
+    return until
+
+
 def occurrence_starts(
     event: dict, from_date: _dt.date, to_date: _dt.date
 ) -> list[_dt.datetime]:
@@ -68,6 +88,9 @@ def occurrence_starts(
     span = max(end - start, _dt.timedelta(0))
     repeat = event.get("repeat") or "none"
     first_day = start.date()
+    until = None
+    if repeat != "none":
+        until = parse_repeat_until(event.get("repeat_until"))
     if repeat == "none" or span > _dt.timedelta(days=1):
         # Multi-day events are not re-expanded: they render as one long bar.
         if first_day > to_date or (start + span).date() < from_date:
@@ -88,7 +111,10 @@ def occurrence_starts(
         else:
             k = max(0, delta.days)
         cur = start + k * unit
-        while cur.date() <= to_date:
+        while (
+            cur.date() <= to_date
+            and (until is None or cur <= until)
+        ):
             if cur.date() >= from_date and cur.date() >= first_day:
                 starts.append(cur)
             cur = cur + unit
@@ -112,6 +138,8 @@ def occurrence_starts(
                 y, m = (y + 1, 1) if m == 12 else (y, m + 1)
                 continue
             if cand.date() > to_date:
+                break
+            if until is not None and cand > until:
                 break
             if cand.date() >= from_date and cand >= start:
                 starts.append(cand)

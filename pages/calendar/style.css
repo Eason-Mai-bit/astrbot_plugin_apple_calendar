@@ -834,6 +834,14 @@ textarea:focus {
   font-size: 11px;
   color: var(--text-2);
 }
+.cal-pop .sec {
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cal-pop .sw.person {
+  border-radius: 50%;
+}
 
 /* ── modal ───────────────────────────────────────────── */
 .modal-backdrop {
@@ -1141,6 +1149,94 @@ textarea:focus {
 }
 .modal input[type="range"]:focus {
   border-color: var(--border);
+}
+
+/* ── color dialog ─────────────────────────────────────── */
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.color-row-label {
+  width: 44px;
+  font-size: 12px;
+  color: var(--text-2);
+  flex: none;
+}
+.color-swatches {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.color-swatches .csw {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  position: relative;
+  padding: 0;
+  flex: none;
+}
+.color-swatches .csw.on {
+  border-color: var(--text);
+}
+.color-swatches .csw.on::after {
+  content: "✓";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+}
+.color-row input[type="color"] {
+  width: 34px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  cursor: pointer;
+  flex: none;
+}
+.color-row input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.color-row input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+.color-preview {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.color-preview span {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-right: 2px;
+}
+.color-preview i {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: block;
+}
+.color-preview i.pri {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--text);
+}
+.modal label.color-extract {
+  display: block;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 4px;
 }
 
 @media (max-width: 860px) {

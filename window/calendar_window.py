@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 
@@ -45,7 +46,6 @@ POLL_MS = 2000
 FAIL_EXIT_AFTER = 15  # consecutive connection failures after a successful connect (~30s) -> exit
 CONNECT_GRACE_MS = 15000  # before first successful connect, retry this long then give up (dead port)
 THEME_ORDER = ["dark", "light", "aurora", "sakura"]  # must match main.py
-ACTIONS_W = 46  # reserved right-side width of pill action icons when selected
 
 # Per-theme color-key for glass mode: pixels of this exact color render fully
 # transparent. The value sits right next to the theme bg, so antialiased text
@@ -99,6 +99,77 @@ THEMES = {
 }
 
 
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _norm_hex(value) -> str | None:
+    s = str(value or "").strip()
+    if len(s) == 4 and s.startswith("#"):
+        s = "#" + "".join(ch * 2 for ch in s[1:])
+    return s.lower() if _HEX_RE.match(s) else None
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    n = int(hex_color[1:], 16)
+    return (n >> 16) & 255, (n >> 8) & 255, n & 255
+
+
+def _rgb_to_hsl(r: int, g: int, b: int) -> tuple[float, float, float]:
+    rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+    mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+    l = (mx + mn) / 2.0
+    h = s = 0.0
+    if mx != mn:
+        d = mx - mn
+        s = d / (2.0 - mx - mn) if l > 0.5 else d / (mx + mn)
+        if mx == rf:
+            h = (gf - bf) / d + (6.0 if gf < bf else 0.0)
+        elif mx == gf:
+            h = (bf - rf) / d + 2.0
+        else:
+            h = (rf - gf) / d + 4.0
+        h *= 60.0
+    return h, s * 100.0, l * 100.0
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    s /= 100.0
+    l /= 100.0
+    c = (1.0 - abs(2.0 * l - 1.0)) * s
+    x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
+    m = l - c / 2.0
+    if h < 60:
+        rp, gp, bp = c, x, 0.0
+    elif h < 120:
+        rp, gp, bp = x, c, 0.0
+    elif h < 180:
+        rp, gp, bp = 0.0, c, x
+    elif h < 240:
+        rp, gp, bp = 0.0, x, c
+    elif h < 300:
+        rp, gp, bp = x, 0.0, c
+    else:
+        rp, gp, bp = c, 0.0, x
+    return "#%02x%02x%02x" % (
+        max(0, min(255, round((rp + m) * 255))),
+        max(0, min(255, round((gp + m) * 255))),
+        max(0, min(255, round((bp + m) * 255))),
+    )
+
+
+def _fit_accent(hex_color: str, dark_bg: bool) -> str:
+    r, g, b = _hex_to_rgb(hex_color)
+    h, s, l = _rgb_to_hsl(r, g, b)
+    s = min(90.0, max(30.0, s))
+    if dark_bg:
+        if l < 58.0:
+            l = min(72.0, l + 12.0)
+        l = min(72.0, max(58.0, l))
+    else:
+        l = min(56.0, max(28.0, l))
+    return _hsl_to_hex(h, s, l)
+
+
 class CalendarWindow:
     """Frameless mini window bound to the plugin loopback API."""
 
@@ -107,6 +178,7 @@ class CalendarWindow:
         self.token = args.token
         self.ratio = max(8, min(18, args.ratio))
         self.theme_name = args.theme if args.theme in THEMES else "light"
+        self.custom_colors: dict | None = None  # {primary, secondary} from /state
         self.snap = getattr(args, "snap", "on") != "off"
         self.glass = getattr(args, "glass", "on") != "off"
         self.panel_url = args.panel_url
@@ -121,8 +193,24 @@ class CalendarWindow:
         self._drag_moved_far = False  # set once total motion exceeds 8px
         self._snap_anim: dict | None = None  # active dock animation state
         self._open_anim_after: object | None = None  # startup slide-in chain
-        self.selected: str | None = None  # pill key showing action icons
-        self.confirm_del = False  # trash was clicked once; click again deletes
+        self.selected: str | None = None  # pill key shown in the detail overlay
+        self.detail_layer: tk.Frame | None = None  # in-window detail overlay
+        self.detail_key: str | None = None
+        self.detail_ev: dict | None = None
+        self.detail_serial: str | None = None  # overlay payload change detector
+        self.detail_btn_cv: tk.Canvas | None = None
+        self._detail_del_armed = False  # 删除 clicked once; click again deletes
+        self._detail_hover: str | None = None  # "done"|"del" hit under cursor
+        self._detail_inner = 0  # overlay content width (root w - 2*pad)
+        self._detail_size_sig: tuple | None = None  # (w, h) overlay drawn for
+        self._f9b: tkfont.Font | None = None  # 9pt bold, footer button text
+        # note box scrolling (mouse wheel)
+        self._note_cv: tk.Canvas | None = None
+        self._note_tid: int | None = None
+        self._note_scroll = 0
+        self._note_scroll_max = 0
+        self._note_view_h = 0
+        self._note_thumb_id: int | None = None
         self._hwnd: int | None = None
         self._rgn_sig: tuple | None = None  # last (hwnds, w, h) the region was set for
         self.tray = None  # pystray.Icon once the system tray starts
@@ -150,7 +238,8 @@ class CalendarWindow:
         self.root.bind("<ButtonPress-1>", self._drag_start)
         self.root.bind("<B1-Motion>", self._drag_move)
         self.root.bind("<ButtonRelease-1>", self._drag_end)
-        self.root.bind("<Configure>", lambda _e: self._apply_round_region())
+        self.root.bind("<Configure>", self._on_root_moved)
+        self.root.bind("<Escape>", self._detail_escape)
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
 
         self.root.after(200, self._poll)
@@ -193,12 +282,72 @@ class CalendarWindow:
                 return
             if not self.pills:
                 break
-            cv, ln = self.pills[0]
-            if not cv.winfo_exists():
-                break
-            w = cv.winfo_width()
-            x = {"select": 8, "check": w - 35, "trash": w - 6}.get(act, 8)
-            self._on_pill_click(cv, ln, type("E", (), {"x": x})())
+            name, _, idx_s = act.partition(":")
+            if name == "openkey":
+                # debug only: open the popup for an arbitrary event id
+                self._open_detail(idx_s)
+                print(
+                    f"DETAIL openkey title={(self.detail_ev or {}).get('title')}",
+                    flush=True,
+                )
+                continue
+            try:
+                idx = max(0, min(int(idx_s), len(self.pills) - 1))
+            except ValueError:
+                idx = 0
+            cv, ln = self.pills[idx]
+            if cv.winfo_exists():
+                if name == "select":
+                    # click a pill: detail popup opens for that task
+                    self._on_pill_click(cv, ln, type("E", (), {"x": 8})())
+                    print(
+                        f"DETAIL open title={(self.detail_ev or {}).get('title')}",
+                        flush=True,
+                    )
+                elif name == "check" and self.detail_key:
+                    self._detail_toggle_done()
+                    print(
+                        f"DETAIL check title={(self.detail_ev or {}).get('title')}",
+                        flush=True,
+                    )
+                elif name == "trash" and self.detail_key:
+                    self._detail_delete()  # arm confirm
+                    self._detail_delete()  # actually delete
+                    print("DETAIL trash done", flush=True)
+                elif name == "wheel":
+                    try:
+                        n = int(idx_s)
+                    except ValueError:
+                        n = 0
+                    for _ in range(abs(n)):
+                        self._detail_note_wheel(
+                            type("E", (), {"delta": -120 if n > 0 else 120})()
+                        )
+                    print(
+                        f"DETAIL wheel scroll={self._note_scroll}"
+                        f" max={self._note_scroll_max}",
+                        flush=True,
+                    )
+                elif name == "dump":
+                    layer = self.detail_layer
+                    if layer is not None and layer.winfo_exists():
+                        layer.update_idletasks()
+                        print(
+                            "DUMP root w=%d h=%d | layer w=%d h=%d"
+                            % (self.root.winfo_width(), self.root.winfo_height(),
+                               layer.winfo_width(), layer.winfo_height()),
+                            flush=True,
+                        )
+                        for ch in layer.winfo_children():
+                            extra = ""
+                            if isinstance(ch, tk.Canvas):
+                                extra = " items=%d" % len(ch.find_all())
+                            print(
+                                "DUMP %s y=%d h=%d w=%d%s"
+                                % (type(ch).__name__, ch.winfo_y(),
+                                   ch.winfo_height(), ch.winfo_width(), extra),
+                                flush=True,
+                            )
 
     # ── layout ──────────────────────────────────────────────────────────
 
@@ -521,7 +670,7 @@ class CalendarWindow:
         self._apply_round_region()
 
     def _icon_button(self, parent: tk.Widget, draw_fn, on_click, side: str) -> tk.Canvas:
-        t = THEMES[self.theme_name]
+        t = self._theme()
         cv = tk.Canvas(
             parent,
             width=22,
@@ -574,7 +723,7 @@ class CalendarWindow:
         cv = getattr(self, "snap_btn", None)
         if cv is not None and cv.winfo_exists():
             cv.delete("all")
-            self._draw_snap_icon(cv, THEMES[self.theme_name])
+            self._draw_snap_icon(cv, self._theme())
 
     def _toggle_snap(self) -> None:
         # Flip locally for instant feedback; the server reply persists the
@@ -591,24 +740,22 @@ class CalendarWindow:
         cv.create_line(6.5, 6.5, 15.5, 15.5, fill=c, width=1.5, capstyle="round")
         cv.create_line(15.5, 6.5, 6.5, 15.5, fill=c, width=1.5, capstyle="round")
 
-    def _draw_check(self, cv: tk.Canvas, x: float, cy: float, color: str) -> None:
-        cv.create_line(
-            x - 6, cy, x - 2, cy + 4, x + 6, cy - 5,
-            fill=color, width=1.8, capstyle="round", joinstyle="round",
-        )
-
-    def _draw_trash(self, cv: tk.Canvas, x: float, cy: float, color: str) -> None:
-        cv.create_line(x - 6, cy - 5, x + 6, cy - 5, fill=color, width=1.4, capstyle="round")
-        cv.create_line(x - 2, cy - 8.5, x + 2, cy - 8.5, fill=color, width=1.4, capstyle="round")
-        cv.create_line(x - 4.5, cy - 3.5, x - 3.5, cy + 7, fill=color, width=1.3, capstyle="round")
-        cv.create_line(x + 4.5, cy - 3.5, x + 3.5, cy + 7, fill=color, width=1.3, capstyle="round")
-        cv.create_line(x - 3.5, cy + 7, x + 3.5, cy + 7, fill=color, width=1.3, capstyle="round")
-        cv.create_line(x, cy - 1, x, cy + 4, fill=color, width=1.2, capstyle="round")
 
     # ── theming ─────────────────────────────────────────────────────────
 
-    def _apply_theme(self) -> None:
+    def _theme(self) -> dict:
+        """Active theme with custom_colors.primary overlaid on accent."""
         t = THEMES[self.theme_name]
+        if self.custom_colors:
+            primary = _norm_hex(self.custom_colors.get("primary"))
+            if primary:
+                dark_bg = sum(_hex_to_rgb(str(t["bg"]))) < 380
+                t = dict(t)
+                t["accent"] = _fit_accent(primary, dark_bg)
+        return t
+
+    def _apply_theme(self) -> None:
+        t = self._theme()
         bg = self._bg(t)  # one uniform surface for every container + text
         for w in (self.root, self.outer, self.topbar, self.cards_frame, self.dig_frame):
             w.configure(bg=bg)
@@ -625,11 +772,21 @@ class CalendarWindow:
             self.more_lbl.configure(bg=bg, fg=t["sub"])
         self._update_glass_color()
         self._repaint_pills()
+        if (
+            self._detail_alive()
+            and self.detail_ev is not None
+        ):
+            self._paint_detail(self.detail_ev)
 
     # ── data ────────────────────────────────────────────────────────────
 
-    def _request(self, path: str, payload: dict | None = None) -> dict | None:
-        url = f"{self.base}{path}?token={self.token}"
+    def _request(
+        self, path: str, payload: dict | None = None, params: dict | None = None
+    ) -> dict | None:
+        q = {"token": self.token}
+        if params:
+            q.update(params)
+        url = f"{self.base}{path}?{urllib.parse.urlencode(q)}"
         data = None
         headers = {}
         if payload is not None:
@@ -671,12 +828,16 @@ class CalendarWindow:
         self.root.after(POLL_MS, self._poll)
 
     def _render(self, state: dict) -> None:
-        t = THEMES[self.theme_name]
         theme = state.get("theme")
         if theme in THEMES and theme != self.theme_name:
             self.theme_name = theme
             self._apply_theme()
-            t = THEMES[self.theme_name]
+        cc = state.get("custom_colors")
+        if cc != self.custom_colors:
+            self.custom_colors = cc if isinstance(cc, dict) else None
+            self.last_state = None
+            self._apply_theme()
+        t = self._theme()
         bg = self._bg(t)
         if "snap" in state:
             new_snap = bool(state.get("snap"))
@@ -829,9 +990,6 @@ class CalendarWindow:
         total = int(digest.get("total") or len(lines))
         shown = lines[:3]
         keys = {str(l.get("key") or "") for l in shown}
-        if self.selected and self.selected not in keys:
-            self.selected = None
-            self.confirm_del = False
         if not shown:
             self.empty_lbl = tk.Label(
                 self.dig_frame,
@@ -888,7 +1046,7 @@ class CalendarWindow:
         w, h = cv.winfo_width(), cv.winfo_height()
         if w <= 2 or h <= 2:
             return
-        t = THEMES[self.theme_name]
+        t = self._theme()
         cv.delete("all")
         cv.create_oval(1, 1, w - 2, h - 2, fill=t["accent"], outline="")
         cv.create_text(
@@ -904,7 +1062,7 @@ class CalendarWindow:
         h = 26
         if w <= 4:
             return
-        t = THEMES[self.theme_name]
+        t = self._theme()
         key = str(ln.get("key") or "")
         sel = bool(key) and key == self.selected
         cv.configure(bg=self._bg(t))
@@ -916,7 +1074,6 @@ class CalendarWindow:
             width=1.5 if sel else 1,
         )
         cy = h / 2 + 1
-        actions_w = ACTIONS_W if sel else 0
         time_s = str(ln.get("time", ""))
         tid = cv.create_text(
             14, cy, text=time_s, anchor="w",
@@ -924,7 +1081,7 @@ class CalendarWindow:
         )
         bb = cv.bbox(tid)
         tx = (bb[2] + 12) if bb else 70
-        avail = w - tx - 14 - actions_w
+        avail = w - tx - 14
         if avail >= 12:
             title = self._trim_to_width(str(ln.get("title", "")), avail)
             if ln.get("done"):
@@ -941,51 +1098,20 @@ class CalendarWindow:
                     tx, cy, text=title, anchor="w",
                     font=("Microsoft YaHei UI", 9), fill=t["text"],
                 )
-        if sel:
-            self._draw_check(cv, w - 35, cy, t["accent"])
-            self._draw_trash(
-                cv, w - 12, cy, "#E5484D" if self.confirm_del else t["sub"]
-            )
-
     def _status_text(self) -> str:
-        if self.confirm_del:
-            return "再点垃圾桶一次确认删除"
-        if self.selected:
-            return "点 ✓ 标记完成 · 垃圾桶删除"
-        return "点击日程可标记完成或删除"
+        if self.selected and self._detail_alive():
+            return "详情可完成或删除"
+        return "点击日程查看详情"
 
     def _on_pill_click(self, cv: tk.Canvas, ln: dict, event: tk.Event) -> None:
         key = str(ln.get("key") or "")
         if not key:
             return
-        w = cv.winfo_width()
-        if self.selected == key and event.x >= w - ACTIONS_W:
-            if event.x >= w - ACTIONS_W // 2:  # trash slot
-                if self.confirm_del:
-                    resp = self._request("/action", {"op": "ev_delete", "key": key})
-                    self.selected = None
-                    self.confirm_del = False
-                    if resp is not None:
-                        self.last_state = None
-                        self._poll_once_now()
-                else:
-                    self.confirm_del = True
-            else:  # check slot
-                resp = self._request("/action", {"op": "ev_done", "key": key})
-                self.selected = None
-                self.confirm_del = False
-                if resp is not None:
-                    self.last_state = None
-                    self._poll_once_now()
-            self.status_lbl.configure(text=self._status_text())
-            self._repaint_pills()
+        if (self.selected == key and self._detail_alive()):
+            self._close_detail()  # clicking the same pill again closes the overlay
             return
-        # body click: select this pill (or deselect when clicking again)
-        if self.selected == key:
-            self.selected = None
-        else:
-            self.selected = key
-        self.confirm_del = False
+        self.selected = key
+        self._open_detail(key)
         self.status_lbl.configure(text=self._status_text())
         self._repaint_pills()
 
@@ -1000,6 +1126,406 @@ class CalendarWindow:
         for cv, ln in self.pills:
             if cv.winfo_exists():
                 self._paint_pill(cv, ln)
+
+    # ── task detail overlay (in-window, panel-modal style) ─────────────────
+
+    @staticmethod
+    def _detail_mix(c1: str, c2: str, ratio: float) -> str:
+        """Blend two #rrggbb colours (ratio = weight of c1)."""
+        a, b = _hex_to_rgb(c1), _hex_to_rgb(c2)
+        return "#%02x%02x%02x" % tuple(
+            max(0, min(255, int(a[i] * ratio + b[i] * (1 - ratio))))
+            for i in range(3)
+        )
+
+    def _detail_alive(self) -> bool:
+        return self.detail_layer is not None and self.detail_layer.winfo_exists()
+
+    def _detail_escape(self, _event: tk.Event | None = None) -> str | None:
+        if self._detail_alive():
+            self._close_detail()
+            return "break"
+        return None
+
+    def _open_detail(self, key: str) -> None:
+        resp = self._request("/detail", params={"key": key})
+        ev = (resp or {}).get("event")
+        if not ev:
+            self._close_detail()  # restores default status text
+            if resp and resp.get("error"):
+                self.status_lbl.configure(text=str(resp["error"])[:24])
+            return
+        self._detail_del_armed = False
+        self._detail_hover = None
+        self.detail_key = key
+        self.detail_ev = ev
+        self.detail_serial = json.dumps(ev, ensure_ascii=False, sort_keys=True)
+        self._build_detail_layer()
+        self._paint_detail(ev)
+
+    def _build_detail_layer(self) -> None:
+        if self._detail_alive():
+            self.detail_layer.lift()
+            return
+        layer = tk.Frame(self.root, bg=self._bg(self._theme()))
+        self.detail_layer = layer
+        layer.place(relx=0, rely=0, relwidth=1, relheight=1)
+        layer.lift()
+
+    # painting -------------------------------------------------------------
+
+    def _paint_detail(self, ev: dict) -> None:
+        layer = self.detail_layer
+        if layer is None or not layer.winfo_exists():
+            return
+        t = self._theme()
+        bg = self._bg(t)
+        # claim the current size first: update_idletasks below may fire
+        # <Configure>, which must not re-enter this painter
+        self._detail_size_sig = (
+            self.root.winfo_width(), self.root.winfo_height()
+        )
+        layer.configure(bg=bg)
+        for child in layer.winfo_children():
+            child.destroy()
+        self.detail_btn_cv = None
+        pad = 14
+        inner = max(120, self.root.winfo_width() - pad * 2)
+        self._detail_inner = inner
+
+        head = tk.Frame(layer, bg=bg)
+        head.pack(fill="x", padx=pad, pady=(13, 0))
+        tk.Label(
+            head, text=str(ev.get("title") or ""), bg=bg, fg=t["text"],
+            font=("Microsoft YaHei UI", 12, "bold"),
+            wraplength=max(60, inner - 26), justify="left", anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        x_btn = tk.Label(
+            head, text="✕", font=("Segoe UI", 10), bg=bg, fg=t["sub"],
+            cursor="hand2", padx=2,
+        )
+        x_btn.pack(side="right")
+        x_btn.bind("<Button-1>", self._detail_x_click)
+        x_btn.bind("<Enter>", lambda _e: x_btn.configure(fg="#E5484D"))
+        x_btn.bind("<Leave>", lambda _e: x_btn.configure(fg=t["sub"]))
+
+        tk.Label(
+            layer, text="时间", bg=bg, fg=t["sub"],
+            font=("Microsoft YaHei UI", 9), anchor="w",
+        ).pack(fill="x", padx=pad, pady=(12, 0))
+        time_cv = tk.Canvas(layer, height=26, bg=bg, highlightthickness=0)
+        time_cv.pack(fill="x", padx=pad, pady=(3, 0))
+        self._draw_field(time_cv, inner, 26)
+        time_cv.create_text(
+            10, 13, anchor="w",
+            text=self._trim_to_width(str(ev.get("dt") or "—"), inner - 26),
+            font=("Microsoft YaHei UI", 9), fill=t["text"],
+        )
+
+        tk.Label(
+            layer, text="备注", bg=bg, fg=t["sub"],
+            font=("Microsoft YaHei UI", 9), anchor="w",
+        ).pack(fill="x", padx=pad, pady=(11, 0))
+        note = str(ev.get("note") or "").strip()
+        note_cv = tk.Canvas(layer, height=30, bg=bg, highlightthickness=0)
+        note_cv.pack(fill="x", padx=pad, pady=(3, 0))
+
+        foot = tk.Canvas(layer, height=30, bg=bg, highlightthickness=0)
+        foot.pack(fill="x", padx=pad, pady=(12, 13))
+        foot.bind("<Button-1>", self._detail_btn_click)
+        foot.bind("<Motion>", self._detail_btn_motion)
+        foot.bind("<Leave>", lambda _e: self._detail_hover_set(None))
+        self.detail_btn_cv = foot
+
+        # size the note box to its text, capped so the footer stays visible
+        try:
+            layer.update_idletasks()
+            avail = self.root.winfo_height() - foot.winfo_y() - 30 - 13 - 8
+        except tk.TclError:
+            avail = 60
+        self._paint_field_text(note_cv, inner, note, avail)
+        self._paint_detail_btns(bool(ev.get("done")))
+
+    def _draw_field(self, cv: tk.Canvas, w: int, h: int) -> None:
+        """Panel input-box look: card fill + hairline border, r8."""
+        t = self._theme()
+        rid = self._round_rect(
+            cv, 0.5, 0.5, w - 0.5, h - 0.5, 8,
+            fill=t["card"], outline=t["border"], width=1,
+        )
+        cv.tag_lower(rid)
+
+    def _paint_field_text(
+        self, cv: tk.Canvas, inner: int, note: str, avail: int
+    ) -> None:
+        t = self._theme()
+        text = note or "无备注"
+        tid = cv.create_text(
+            10, 8, text=text, anchor="nw", width=inner - 26,
+            font=("Microsoft YaHei UI", 9),
+            fill=t["text"] if note else t["sub"],
+        )
+        bbox = cv.bbox(tid)
+        content = (bbox[3] - bbox[1] + 16) if bbox else 30
+        h = max(30, min(content, max(30, int(avail))))
+        cv.configure(height=h)
+        self._draw_field(cv, inner, h)
+        # wheel-scrolling state: overflow is reachable by scrolling
+        self._note_cv = cv
+        self._note_tid = tid
+        self._note_view_h = h
+        self._note_scroll = 0
+        self._note_scroll_max = max(0, content - h)
+        self._note_thumb_id = None
+        if self._note_scroll_max > 0:
+            self._draw_note_thumb(cv, inner, h, self._bg(t), t)
+        cv.bind("<MouseWheel>", self._detail_note_wheel)
+
+    def _draw_note_thumb(
+        self, cv: tk.Canvas, inner: int, h: int, bg: str, t: dict
+    ) -> None:
+        """Slim scrollbar thumb on the right edge (only when scrollable)."""
+        if self._note_scroll_max <= 0 or h <= 8:
+            return
+        top, bot = 3.0, h - 3.0
+        track = bot - top
+        thumb_h = max(12.0, track * h / (h + self._note_scroll_max))
+        span = track - thumb_h
+        y0 = top + span * (self._note_scroll / self._note_scroll_max)
+        col = self._detail_mix(t["sub"], bg, 0.5)
+        self._note_thumb_id = self._round_rect(
+            cv, inner - 8, y0, inner - 5, y0 + thumb_h, 1.5,
+            fill=col, outline="",
+        )
+
+    def _detail_note_wheel(self, event: tk.Event) -> str | None:
+        """Scroll the note box with the mouse wheel (delta 120/notch)."""
+        cv = self._note_cv
+        if (
+            cv is None
+            or not cv.winfo_exists()
+            or self._note_scroll_max <= 0
+            or self._note_tid is None
+        ):
+            return None
+        step = 24
+        direction = -1 if getattr(event, "delta", 0) > 0 else 1
+        new = max(0, min(self._note_scroll_max, self._note_scroll + direction * step))
+        if new == self._note_scroll:
+            return "break"
+        self._note_scroll = new
+        try:
+            cv.coords(self._note_tid, 10, 8 - new)
+        except tk.TclError:
+            return None
+        t = self._theme()
+        if self._note_thumb_id is not None:
+            try:
+                cv.delete(self._note_thumb_id)
+            except tk.TclError:
+                pass
+            self._note_thumb_id = None
+        self._draw_note_thumb(cv, self._detail_inner, self._note_view_h, self._bg(t), t)
+        return "break"
+
+    def _detail_hover_set(self, which: str | None) -> None:
+        if self._detail_hover == which:
+            return
+        self._detail_hover = which
+        self._paint_detail_btns(bool((self.detail_ev or {}).get("done")))
+
+    def _detail_btn_motion(self, event: tk.Event) -> None:
+        """Hover feedback: tk only tracks the canvas 'current' tag on motion,
+        so enter/leave between the two pills must be derived from it."""
+        cv = self.detail_btn_cv
+        if cv is None or not cv.winfo_exists():
+            return
+        which = None
+        for iid in cv.find_withtag("current"):
+            tags = cv.gettags(iid)
+            if "pd_done" in tags:
+                which = "done"
+                break
+            if "pd_del" in tags:
+                which = "del"
+                break
+        self._detail_hover_set(which)
+        try:
+            cv.configure(cursor="hand2" if which else "")
+        except tk.TclError:
+            pass
+
+    def _detail_x_click(self, _event: tk.Event | None = None):
+        self._close_detail()
+        return "break"
+
+    def _paint_detail_btns(self, done: bool) -> None:
+        cv = self.detail_btn_cv
+        if cv is None or not cv.winfo_exists():
+            return
+        t = self._theme()
+        bg = self._bg(t)
+        inner = self._detail_inner or max(120, self.root.winfo_width() - 28)
+        cv.configure(bg=bg)
+        cv.delete("all")
+        if self._f9b is None:
+            self._f9b = tkfont.Font(
+                family="Microsoft YaHei UI", size=9, weight="bold"
+            )
+        danger = "#E5484D"
+        armed = self._detail_del_armed
+        dtext = "确认删除？" if armed else "删除"
+        dpw = self._f9b.measure(dtext) + 26
+        if armed:
+            dfill = danger
+            if self._detail_hover == "del":
+                dfill = self._detail_mix(danger, "#FFFFFF", 0.90)
+            doutline, dcol = "", "#FFFFFF"
+        else:
+            dfill = ""
+            if self._detail_hover == "del":
+                dfill = self._detail_mix(danger, bg, 0.12)
+            doutline, dcol = danger, danger
+        self._round_rect(
+            cv, 1.5, 1.5, dpw, 28.5, 13.5,
+            fill=dfill, outline=doutline, width=1.2, tags="pd_del",
+        )
+        cv.create_text(
+            dpw / 2, 15, text=dtext, anchor="center", font=self._f9b,
+            fill=dcol, tags="pd_del",
+        )
+        label = "↩ 撤销完成" if done else "✓ 完成"
+        pw = self._f9b.measure(label) + 26
+        x2 = inner - 1.5
+        x1 = x2 - pw
+        fill = t["accent"]
+        if self._detail_hover == "done":
+            fill = self._detail_mix(t["accent"], bg, 0.85)
+        self._round_rect(
+            cv, x1, 1.5, x2, 28.5, 13.5,
+            fill=fill, outline="", tags="pd_done",
+        )
+        cv.create_text(
+            (x1 + x2) / 2, 15, text=label, font=self._f9b, fill="#FFFFFF",
+            tags="pd_done",
+        )
+
+    def _detail_btn_click(self, event: tk.Event):
+        cv = self.detail_btn_cv
+        if cv is None or not cv.winfo_exists():
+            return "break"
+        tags: set = set()
+        for iid in cv.find_withtag("current"):
+            tags.update(cv.gettags(iid))
+        if "pd_done" in tags:
+            self._detail_toggle_done()
+            return "break"
+        if "pd_del" in tags:
+            self._detail_delete()
+            return "break"
+        return None  # empty footer area: let the window drag take over
+
+    def _detail_toggle_done(self) -> None:
+        key = self.detail_key
+        if not key:
+            return
+        if self._request("/action", {"op": "ev_done", "key": key}) is None:
+            return
+        self.last_state = None
+        self._poll_once_now()  # pills, popup and status refresh via /state
+
+    def _detail_delete(self) -> None:
+        key = self.detail_key
+        if not key:
+            return
+        if not self._detail_del_armed:
+            self._detail_del_armed = True
+            self._paint_detail_btns(bool((self.detail_ev or {}).get("done")))
+            self.status_lbl.configure(text="再点一次确认删除")
+            self.root.after(4000, self._detail_disarm)
+            return
+        if self._request("/action", {"op": "ev_delete", "key": key}) is None:
+            return
+        self._detail_del_armed = False
+        self._close_detail()
+        self.status_lbl.configure(text="已删除")
+        self.last_state = None
+        self._poll_once_now()
+
+    def _detail_disarm(self) -> None:
+        if not self._detail_del_armed:
+            return
+        self._detail_del_armed = False
+        self._paint_detail_btns(bool((self.detail_ev or {}).get("done")))
+        self.status_lbl.configure(text=self._status_text())
+
+    def _sync_detail(self) -> None:
+        """Every poll: re-fetch overlay data, repaint on change, close if gone."""
+        if not self._detail_alive():
+            return
+        key = self.detail_key
+        if not key:
+            self._close_detail()
+            return
+        resp = self._request("/detail", params={"key": key})
+        if resp is None:
+            return  # transient error: keep showing current content
+        ev = resp.get("event")
+        if not ev:
+            self._close_detail()  # event deleted remotely
+            self.status_lbl.configure(text="日程已删除")
+            return
+        sig = json.dumps(ev, ensure_ascii=False, sort_keys=True)
+        if sig != self.detail_serial:
+            prev = self.detail_ev or {}
+            self.detail_serial = sig
+            self.detail_ev = ev
+            # only the done flag flipped → patch the footer in place
+            # (no full rebuild, so the overlay doesn't flicker)
+            others_same = (
+                {k: v for k, v in prev.items() if k != "done"}
+                == {k: v for k, v in ev.items() if k != "done"}
+            )
+            if others_same:
+                self._paint_detail_btns(bool(ev.get("done")))
+            else:
+                self._paint_detail(ev)
+
+    def _close_detail(self) -> None:
+        self._detail_del_armed = False
+        self._detail_hover = None
+        self.detail_key = None
+        self.detail_ev = None
+        self.detail_serial = None
+        self.detail_btn_cv = None
+        self._note_cv = None
+        self._note_tid = None
+        self._note_scroll = 0
+        self._note_scroll_max = 0
+        self._note_view_h = 0
+        self._note_thumb_id = None
+        layer = self.detail_layer
+        self.detail_layer = None
+        if layer is not None:
+            try:
+                if layer.winfo_exists():
+                    layer.destroy()
+            except tk.TclError:
+                pass
+        if self.selected:
+            self.selected = None
+            self.status_lbl.configure(text=self._status_text())
+            self._repaint_pills()
+
+    def _on_root_moved(self, _event: tk.Event | None = None) -> None:
+        self._apply_round_region()
+        if not self._detail_alive():
+            return
+        sig = (self.root.winfo_width(), self.root.winfo_height())
+        if sig != self._detail_size_sig:
+            self._detail_size_sig = sig
+            if self.detail_ev is not None:
+                self._paint_detail(self.detail_ev)
 
     def _fit(self) -> None:
         """Resize to content while keeping the window fully inside the work area."""
@@ -1028,6 +1554,7 @@ class CalendarWindow:
         if state is not None:
             self.failures = 0
             self._render(state)
+            self._sync_detail()
 
     def _cycle_theme(self) -> None:
         # Paint the next theme locally first so the click feels instant;

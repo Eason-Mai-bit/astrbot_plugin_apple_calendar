@@ -35,6 +35,7 @@
     aiHist: [], // {role, content} chat history for the AI dialog
     aiBusy: false,
     bg: { image: "", opacity: 0.3 },
+    customColors: null, // {primary, secondary} | null = default palette
   };
 
   // ── date helpers ────────────────────────────────────────────────
@@ -78,9 +79,30 @@
   // ── visibility filters ─────────────────────────────────────────
   const visible = (ev) => {
     if (ev.category === "festival") return S.cals.festival;
+    if (S.cals["own:" + (ev.owner || "")] === false) return false;
     return S.cals[ev.color] !== false;
   };
   const colorVar = (name) => `var(--c-${name || "blue"})`;
+  const PERSON_DOT = ["#8b9bb4", "#b48b9e", "#9e9a8b", "#8bb4a2", "#a28bb4"];
+  const personDot = (o) => {
+    if (!o) return "#a7aebc";
+    let h = 0;
+    for (const ch of o) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return PERSON_DOT[h % PERSON_DOT.length];
+  };
+  function refreshOwnerList() {
+    const dl = $("#f-owner-list");
+    if (!dl) return;
+    const owners = [
+      ...new Set(S.range.events.map((e) => e.owner || "").filter(Boolean)),
+    ];
+    dl.innerHTML = "";
+    for (const o of owners) {
+      const opt = document.createElement("option");
+      opt.value = o;
+      dl.appendChild(opt);
+    }
+  }
 
   // ── range loading ──────────────────────────────────────────────
   async function loadRange(from, to) {
@@ -767,6 +789,7 @@
     $("#f-submit").textContent = "添加";
     $("#f-del").hidden = true;
     $("#f-title").value = "";
+    $("#f-owner").value = "";
     $("#f-allday").checked = false;
     const hk = dateKey || iso(S.y, S.m, S.d);
     const h = Math.min(hour ?? (S.cfg?.day_start_hour ?? 9), 23);
@@ -783,6 +806,7 @@
     $("#f-note").value = "";
     buildColorSwatches();
     $("#f-colors").querySelector(".swatch-btn")?.classList.add("on");
+    refreshOwnerList();
     $("#modal").hidden = false;
     $("#f-title").focus();
   }
@@ -802,6 +826,7 @@
     $("#f-del").textContent = "删除";
     $("#f-del").dataset.armed = "";
     $("#f-title").value = item.title || "";
+    $("#f-owner").value = item.owner || "";
     $("#f-allday").checked = !!item.all_day;
     $("#f-start").value = dtLocalValue(item.start);
     $("#f-end").value = dtLocalValue(item.end);
@@ -818,6 +843,7 @@
       `.swatch-btn[data-color="${item.color || "blue"}"]`,
     );
     (sw || $("#f-colors").querySelector(".swatch-btn"))?.classList.add("on");
+    refreshOwnerList();
     $("#modal").hidden = false;
     $("#f-title").focus();
   }
@@ -888,6 +914,7 @@
       remind_minutes: parseInt($("#f-remind").value, 10) || 0,
       color,
       note: $("#f-note").value,
+      owner: $("#f-owner").value.trim(),
     };
     try {
       if (S.editing) {
@@ -908,14 +935,6 @@
   $("#btn-ctx").addEventListener("click", () => {
     if (S.view === "day") setView("month");
     else if (S.view === "month") setView("year");
-  });
-  $("#btn-view").addEventListener("click", () => {
-    if (S.split) {
-      S.split = false;
-      syncSplitBtn();
-    }
-    if (S.view === "day") setView("month");
-    else setView("day");
   });
   $("#btn-split").addEventListener("click", async () => {
     S.split = !S.split;
@@ -961,7 +980,9 @@
       S.y = y;
       S.m = m;
       S.d = d;
-      refreshCurrent();
+      // 分栏模式：仅选中该天更新右侧列表；普通月视图：直接进入该天日视图
+      if (S.split) refreshCurrent();
+      else setView("day");
     }
   });
   $("#view-year").addEventListener("click", (e) => {
@@ -1249,6 +1270,252 @@
     }
   });
 
+  // ── custom colors ────────────────────────────────────────
+  const PRESET_COLORS = [
+    "#2563eb", "#0d9488", "#6366f1", "#64748b",
+    "#dc2626", "#9333ea", "#ea580c", "#16a34a",
+  ];
+  const DEFAULT_PRIMARY = "#2563eb";
+  const DEFAULT_SECONDARY = "#3e6bb0";
+  const COLOR_VARS = [
+    "--accent", "--today", "--rest-bg", "--rest-fg", "--work-bg", "--work-fg",
+    "--deep-fill", "--deep-text", "--c-blue", "--c-teal", "--c-indigo", "--c-slate",
+  ];
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const hexToRgb = (hex) => {
+    const s = String(hex || "").trim().replace(/^#/, "");
+    if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
+    const n = parseInt(s, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const rgbToHsl = (r, g, b) => {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const l = (mx + mn) / 2;
+    let h = 0, s = 0;
+    if (mx !== mn) {
+      const d = mx - mn;
+      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+      if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (mx === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+    }
+    return [h, s * 100, l * 100];
+  };
+  const wrapHue = (h) => Math.round(((h % 360) + 360) % 360);
+  const deriveVars = (priHex, secHex, dark) => {
+    const pr = hexToRgb(priHex) || hexToRgb(DEFAULT_PRIMARY);
+    const sr = hexToRgb(secHex) || hexToRgb(DEFAULT_SECONDARY);
+    const [ph, ps, pl] = rgbToHsl(pr[0], pr[1], pr[2]);
+    const [bh, bs] = rgbToHsl(sr[0], sr[1], sr[2]);
+    const ah = Math.round(ph);
+    const bhue = wrapHue(bh);
+    const priS = clamp(ps, 35, 85);
+    const catS = clamp(bs, 35, 80);
+    const accS = clamp(ps, 30, 90);
+    const accL = dark ? clamp(pl < 58 ? pl + 12 : pl, 58, 72) : clamp(pl, 28, 56);
+    const v = {};
+    v["--accent"] = `hsl(${ah}, ${accS}%, ${accL}%)`;
+    v["--today"] = `hsl(${ah}, ${dark ? priS : clamp(ps, 45, 85)}%, ${dark ? 60 : clamp(pl, 45, 60)}%)`;
+    v["--rest-bg"] = `hsla(${ah}, ${priS}%, 50%, ${dark ? 0.16 : 0.12})`;
+    v["--rest-fg"] = `hsl(${ah}, ${priS}%, ${dark ? 74 : 45}%)`;
+    v["--work-bg"] = `hsla(${bhue}, ${catS}%, 50%, ${dark ? 0.16 : 0.1})`;
+    v["--work-fg"] = `hsl(${bhue}, ${catS}%, ${dark ? 74 : 43}%)`;
+    v["--deep-fill"] = dark
+      ? `hsla(${bhue}, ${catS}%, 58%, 0.32)`
+      : `hsl(${bhue}, ${clamp(bs * 0.7, 25, 70)}%, 93%)`;
+    v["--deep-text"] = dark
+      ? `hsl(${bhue}, 55%, 88%)`
+      : `hsl(${bhue}, ${clamp(bs, 25, 60)}%, 28%)`;
+    v["--c-blue"] = `hsl(${bhue}, ${catS}%, ${dark ? 66 : 44}%)`;
+    v["--c-teal"] = `hsl(${wrapHue(bh - 30)}, ${catS}%, ${dark ? 62 : 38}%)`;
+    v["--c-indigo"] = `hsl(${wrapHue(bh + 22)}, ${catS}%, ${dark ? 70 : 48}%)`;
+    v["--c-slate"] = `hsl(${bhue}, ${clamp(bs * 0.3, 8, 30)}%, ${dark ? 62 : 45}%)`;
+    return v;
+  };
+  const applyCustomColors = () => {
+    const root = document.documentElement;
+    const cc = S.customColors;
+    if (!cc || !cc.primary || !cc.secondary) {
+      for (const k of COLOR_VARS) root.style.removeProperty(k);
+      return;
+    }
+    const dark = root.dataset.theme === "dark";
+    for (const [k, val] of Object.entries(deriveVars(cc.primary, cc.secondary, dark))) {
+      root.style.setProperty(k, val);
+    }
+  };
+  const buildPaletteSwatches = (rowSel, inputSel) => {
+    const row = $(rowSel);
+    const input = $(inputSel);
+    row.innerHTML = "";
+    for (const hex of PRESET_COLORS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "csw";
+      b.style.background = hex;
+      b.dataset.hex = hex;
+      b.addEventListener("click", () => {
+        input.value = hex;
+        syncColorRow(rowSel, inputSel);
+        refreshColorPreview();
+      });
+      row.appendChild(b);
+    }
+    syncColorRow(rowSel, inputSel);
+  };
+  const syncColorRow = (rowSel, inputSel) => {
+    const cur = ($(inputSel).value || "").toLowerCase();
+    $(rowSel).querySelectorAll(".csw").forEach((s) => {
+      s.classList.toggle("on", s.dataset.hex === cur);
+    });
+  };
+  const refreshColorPreview = () => {
+    const pri = $("#color-primary").value;
+    const sec = $("#color-secondary").value;
+    const dark = document.documentElement.dataset.theme === "dark";
+    const vars = deriveVars(pri, sec, dark);
+    const wrap = $("#color-preview");
+    wrap.innerHTML = "<span>预览</span>";
+    const priDot = document.createElement("i");
+    priDot.className = "pri";
+    priDot.style.background = vars["--accent"];
+    wrap.appendChild(priDot);
+    for (const k of ["--c-blue", "--c-teal", "--c-indigo", "--c-slate"]) {
+      const dot = document.createElement("i");
+      dot.style.background = vars[k];
+      wrap.appendChild(dot);
+    }
+  };
+  const colorDist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const extractPalette = (file) =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        try {
+          const N = 64;
+          const cv = document.createElement("canvas");
+          cv.width = N;
+          cv.height = N;
+          const ctx = cv.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(img, 0, 0, N, N);
+          const px = ctx.getImageData(0, 0, N, N).data;
+          const buckets = new Map();
+          for (let i = 0; i < px.length; i += 4) {
+            if (px[i + 3] < 128) continue;
+            const r = px[i], g = px[i + 1], b = px[i + 2];
+            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            if (lum < 40 || lum > 235) continue; // skip near-black / near-white
+            const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4); // 4bit/channel
+            const e = buckets.get(key);
+            if (e) {
+              e.n++; e.r += r; e.g += g; e.b += b;
+            } else {
+              buckets.set(key, { n: 1, r, g, b });
+            }
+          }
+          const cand = [...buckets.values()]
+            .sort((a, b) => b.n - a.n)
+            .map((e) => [Math.round(e.r / e.n), Math.round(e.g / e.n), Math.round(e.b / e.n)]);
+          if (!cand.length) {
+            reject(new Error("未能从图片中提取到颜色"));
+            return;
+          }
+          const hex = (c) =>
+            "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+          const primary = cand[0];
+          const secondary = cand.find((c) => colorDist(c, primary) > 100);
+          if (!secondary) {
+            reject(new Error("图片色彩过于单一，请换一张图片"));
+            return;
+          }
+          resolve({ primary: hex(primary), secondary: hex(secondary) });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("读取图片失败"));
+      };
+      img.src = url;
+    });
+  $("#btn-color").addEventListener("click", () => {
+    const pri = S.customColors?.primary || DEFAULT_PRIMARY;
+    const sec = S.customColors?.secondary || DEFAULT_SECONDARY;
+    $("#color-primary").value = pri;
+    $("#color-secondary").value = sec;
+    $("#color-file").value = "";
+    buildPaletteSwatches("#sw-primary", "#color-primary");
+    buildPaletteSwatches("#sw-secondary", "#color-secondary");
+    refreshColorPreview();
+    $("#color-modal").hidden = false;
+  });
+  for (const id of ["#color-primary", "#color-secondary"]) {
+    $(id).addEventListener("input", () => {
+      syncColorRow(id === "#color-primary" ? "#sw-primary" : "#sw-secondary", id);
+      refreshColorPreview();
+    });
+  }
+  $("#color-cancel").addEventListener("click", () => {
+    $("#color-modal").hidden = true;
+  });
+  $("#color-modal").addEventListener("click", (e) => {
+    if (e.target === $("#color-modal")) $("#color-modal").hidden = true;
+  });
+  $("#color-file").addEventListener("change", async () => {
+    const file = $("#color-file").files[0];
+    if (!file) return;
+    const ok = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+    if (!ok.includes(file.type)) {
+      toast("仅支持 PNG/JPEG/WebP/GIF 图片");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast("图片不能超过 8MB");
+      return;
+    }
+    try {
+      const pal = await extractPalette(file);
+      $("#color-primary").value = pal.primary;
+      $("#color-secondary").value = pal.secondary;
+      syncColorRow("#sw-primary", "#color-primary");
+      syncColorRow("#sw-secondary", "#color-secondary");
+      refreshColorPreview();
+      toast("已提取配色，确认后点「应用」");
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+  $("#color-reset").addEventListener("click", async () => {
+    try {
+      await apiPost("colors/clear", {});
+      S.customColors = null;
+      applyCustomColors();
+      $("#color-modal").hidden = true;
+      toast("已恢复默认配色");
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+  $("#color-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const primary = $("#color-primary").value;
+    const secondary = $("#color-secondary").value;
+    try {
+      await apiPost("colors", { primary, secondary });
+      S.customColors = { primary, secondary };
+      applyCustomColors();
+      $("#color-modal").hidden = true;
+      toast("配色已应用");
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+
   // ── calendar filter popover ────────────────────────────────────
   $("#btn-cals").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1261,7 +1528,14 @@
     for (const c of Object.keys(COLOR_CN)) counts[c] = 0;
     for (const ev of S.range.events) {
       if (counts[ev.color] !== undefined) counts[ev.color] += 1;
+      const ok = "own:" + (ev.owner || "");
+      counts[ok] = (counts[ok] || 0) + 1;
     }
+    const ownerKeys = Object.keys(counts)
+      .filter((k) => k.startsWith("own:"))
+      .sort((a, b) =>
+        a === "own:" ? -1 : b === "own:" ? 1 : a.localeCompare(b),
+      );
     const items = [
       { key: "festival", label: "节日·节气", color: "" },
       ...Object.keys(COLOR_CN).map((c) => ({
@@ -1269,9 +1543,23 @@
         label: COLOR_CN[c],
         color: colorVar(c),
       })),
+      { sec: "按人" },
+      ...ownerKeys.map((k) => ({
+        key: k,
+        label: k.slice(4) || "未分配",
+        color: personDot(k.slice(4)),
+        person: true,
+      })),
     ];
     pop.innerHTML = "";
     for (const it of items) {
+      if (it.sec) {
+        const sec = document.createElement("div");
+        sec.className = "sec";
+        sec.textContent = it.sec;
+        pop.appendChild(sec);
+        continue;
+      }
       const label = document.createElement("label");
       const cb = document.createElement("input");
       cb.type = "checkbox";
@@ -1283,7 +1571,7 @@
       label.appendChild(cb);
       if (it.color) {
         const sw = document.createElement("span");
-        sw.className = "sw";
+        sw.className = it.person ? "sw person" : "sw";
         sw.style.background = it.color;
         label.appendChild(sw);
       }
@@ -1313,6 +1601,7 @@
       if (!$("#modal").hidden) closeModal();
       if (!$("#ai-modal").hidden) $("#ai-modal").hidden = true;
       if (!$("#bg-modal").hidden) $("#bg-modal").hidden = true;
+      if (!$("#color-modal").hidden) $("#color-modal").hidden = true;
       $("#searchbox").hidden = true;
       $("#cal-pop").hidden = true;
     }
@@ -1336,6 +1625,7 @@
   (async function boot() {
     const applyTheme = (isDark) => {
       document.documentElement.dataset.theme = isDark ? "dark" : "light";
+      applyCustomColors();
     };
     applyTheme(!!bridge.context?.isDark);
     bridge.onContext?.((ctx) => applyTheme(!!ctx?.isDark));
@@ -1347,6 +1637,8 @@
     try {
       S.cfg = await apiGet("config");
       S.mode = S.cfg.display_mode || "panel";
+      S.customColors = S.cfg.custom_colors || null;
+      applyCustomColors();
     } catch (e) {
       toast(errText(e));
     }

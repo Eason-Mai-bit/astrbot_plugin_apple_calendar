@@ -11,10 +11,12 @@ import base64
 import datetime as dt
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
 import threading
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -60,11 +62,15 @@ REMINDER_CARD_MAX_AGE = dt.timedelta(days=7)
 
 PROTOCOL = (
     "仅在调用本工具时遵循以下流程：1) 只问缺失字段，用户已说清的绝不再问；"
-    "2) 起止时间缺失必须询问，颜色/备注/提醒/重复等可选字段未说明则用默认值，"
+    "2) 起止时间缺失必须询问，颜色/备注/提醒/重复/谁的日程等可选字段未说明则用默认值，"
     "并用一句话说明「未说明则用默认」，不要逐项追问；3) 所有缺失字段在同一条消息里一次问完；"
     "4) 问齐后复述摘要并等用户确认（例：「→ 明早8:00 交作业，每天重复，提前15分钟提醒，确认添加？」），"
     "用户确认后才调用本工具；5) 时间一律写成绝对时间 YYYY-MM-DD HH:MM，"
-    "根据当前时间解析「明天/下周三」等相对表述。日历为全局单一日历，所有会话共享。"
+    "根据当前时间解析「明天/下周三」等相对表述；"
+    "6) 用户说「每天/每周…持续到/直到/截止到某日」时，必须把该日解析为 repeat_until 参数传入"
+    "（这时不再询问），绝不能把终止日期只写进 note；"
+    "用户要求重复但没说持续多久时，在摘要里附一句「未加终止日期，会一直重复」。"
+    "日历为全局单一日历，所有会话共享。"
 )
 
 
@@ -90,9 +96,12 @@ AI_SYS_PROMPT = (
     "events 规则：不需要创建日程时为 []；需要创建时每个元素为 "
     '{"title":"标题(必填,≤120字)", "start":"YYYY-MM-DD HH:MM", '
     '"end":"YYYY-MM-DD HH:MM", "all_day":false, "repeat":"none|daily|weekly|monthly", '
+    '"repeat_until":"重复终止日期 YYYY-MM-DD（仅 repeat 非 none 且用户说了持续期限时才给）", '
     '"remind_minutes":0, "color":"blue|teal|indigo|slate", "note":""}。\n'
     "start 必须早于 end；end 缺省为 start 后 1 小时；用户没说年份就按当前时间推断；"
-    "没说提醒用 0；没说颜色用 blue；没说重复用 none。一次最多创建 3 个日程。\n"
+    "没说提醒用 0；没说颜色用 blue；没说重复用 none；"
+    "用户说「持续到/直到/截止到某日」的重复必须解析出该日期填入 repeat_until，不能只写进 note。"
+    "一次最多创建 3 个日程。\n"
     "reply 要自然友好、一句话说明创建结果或回答内容。"
 )
 
@@ -115,6 +124,17 @@ def _norm_opacity(value, default: float = 0.3) -> float:
     except (TypeError, ValueError):
         return default
     return min(max(op, 0.05), 0.9)
+
+
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _norm_hex(value) -> str | None:
+    """Normalize to lowercase #rrggbb, or None when not a valid hex color."""
+    s = str(value or "").strip()
+    if len(s) == 4 and s.startswith("#"):  # #rgb -> #rrggbb
+        s = "#" + "".join(ch * 2 for ch in s[1:])
+    return s.lower() if _HEX_RE.match(s) else None
 
 
 def _parse_ai_json(raw: str) -> dict | None:
@@ -169,6 +189,14 @@ if _HAS_TOOLS:
                         "enum": list(REPEAT_CHOICES),
                         "description": "重复规则；缺省 none",
                     },
+                    "repeat_until": {
+                        "type": "string",
+                        "description": (
+                            "重复终止日期 YYYY-MM-DD 或 YYYY-MM-DD HH:MM；仅 repeat 非 none 时使用。"
+                            "用户说「持续到/直到/截止到某日」时必须解析为该参数传入，"
+                            "不能只写进 note；未说持续期限则不传（会一直重复）"
+                        ),
+                    },
                     "remind_minutes": {
                         "type": "integer",
                         "description": "提前提醒分钟数，0 表示不提醒；缺省用默认值",
@@ -178,6 +206,13 @@ if _HAS_TOOLS:
                         "type": "string",
                         "enum": list(COLOR_CHOICES),
                         "description": "颜色分组；缺省 blue",
+                    },
+                    "owner": {
+                        "type": "string",
+                        "description": (
+                            "这条日程是谁的（人名，如：我/室友/全家）；"
+                            "缺省空字符串"
+                        ),
                     },
                 },
                 "required": ["title", "start"],
@@ -245,9 +280,17 @@ if _HAS_TOOLS:
                         "enum": list(REPEAT_CHOICES),
                         "description": "重复规则",
                     },
+                    "repeat_until": {
+                        "type": "string",
+                        "description": (
+                            "重复终止日期；设置或修改重复终止条件时传入。"
+                            "清除终止限制传空字符串"
+                        ),
+                    },
                     "remind_minutes": {"type": "integer", "description": "提前提醒分钟数，0=不提醒"},
                     "note": {"type": "string", "description": "备注"},
                     "color": {"type": "string", "enum": list(COLOR_CHOICES), "description": "颜色分组"},
+                    "owner": {"type": "string", "description": "归属人（人名）；清空传空字符串"},
                 },
                 "required": ["id"],
             }
@@ -464,6 +507,7 @@ class CalendarPlugin(Star):
                 "reminders",
                 "dismissed",
                 "panel_bg",
+                "custom_colors",
             ):
                 if key in data:
                     self._state[key] = data[key]
@@ -475,12 +519,23 @@ class CalendarPlugin(Star):
             self._state["reminders"] = {}
         if not isinstance(self._state.get("dismissed"), dict):
             self._state["dismissed"] = {}
+        if not self._valid_custom_colors(self._state.get("custom_colors")):
+            self._state.pop("custom_colors", None)
 
     def _save_state(self) -> None:
         try:
             rec.atomic_write_json(str(self._state_path), self._state)
         except OSError as exc:
             logger.error("[calendar] saving state failed: %s", exc)
+
+    @staticmethod
+    def _valid_custom_colors(value) -> bool:
+        """custom_colors must be {"primary","secondary"} of valid hex colors."""
+        if not isinstance(value, dict):
+            return False
+        return bool(_norm_hex(value.get("primary"))) and bool(
+            _norm_hex(value.get("secondary"))
+        )
 
     # ── event CRUD core ──────────────────────────────────────────────────
 
@@ -529,6 +584,20 @@ class CalendarPlugin(Star):
         if "repeat" in data:
             rep = str(data.get("repeat") or "none")
             out["repeat"] = rep if rep in REPEAT_CHOICES else "none"
+        if "repeat_until" in data:
+            ru = data.get("repeat_until")
+            s = "" if ru is None else str(ru).strip()
+            if not s or s.lower() in ("none", "null"):
+                out["repeat_until"] = None
+            else:
+                parse_datetime(s)  # raises ValueError on bad format
+                out["repeat_until"] = s
+                ref_start = out.get("start") or data.get("start")
+                if ref_start:
+                    if parse_datetime(s).date() < parse_datetime(ref_start).date():
+                        raise ValueError("repeat_until 不能早于日程开始日期")
+            if (out.get("repeat") or str(data.get("repeat") or "none")) == "none":
+                out["repeat_until"] = None
         if "remind_minutes" in data:
             rm = data.get("remind_minutes")
             if rm is None or rm == "":
@@ -546,6 +615,11 @@ class CalendarPlugin(Star):
             if len(note) > 2000:
                 raise ValueError("备注最长 2000 字")
             out["note"] = note
+        if not partial or "owner" in data:
+            owner = str(data.get("owner") or "").strip()
+            if len(owner) > 32:
+                raise ValueError("「谁的日程」最长 32 字")
+            out["owner"] = owner
         if "done" in data:
             out["done"] = bool(data.get("done"))
         return out
@@ -564,12 +638,15 @@ class CalendarPlugin(Star):
                 "repeat": fields.get("repeat", "none"),
                 "remind_minutes": fields.get("remind_minutes", self._remind_default),
                 "note": fields.get("note", ""),
+                "owner": fields.get("owner", ""),
                 "done": fields.get("done", False),
                 "demo": bool(payload.get("demo")),
                 "created_by": created_by,
                 "created_at": now,
                 "updated_at": now,
             }
+            if fields.get("repeat_until"):
+                ev["repeat_until"] = fields["repeat_until"]
             self._events.append(ev)
             self._save_events()
             return ev
@@ -588,13 +665,17 @@ class CalendarPlugin(Star):
                 "end",
                 "color",
                 "repeat",
+                "repeat_until",
                 "remind_minutes",
                 "note",
+                "owner",
                 "done",
             )
             for key in allowed:
                 if key in fields:
                     ev[key] = fields[key]
+            if "repeat_until" in fields and not fields["repeat_until"]:
+                ev.pop("repeat_until", None)
             ev["updated_at"] = dt_str(dt.datetime.now())
             self._save_events()
             return ev
@@ -648,8 +729,10 @@ class CalendarPlugin(Star):
                         "all_day": bool(ev.get("all_day")),
                         "color": ev.get("color", "blue"),
                         "repeat": ev.get("repeat", "none"),
+                        "repeat_until": ev.get("repeat_until"),
                         "remind_minutes": ev.get("remind_minutes"),
                         "note": ev.get("note", ""),
+                        "owner": ev.get("owner", ""),
                         "done": bool(ev.get("done")) or bool(st.get("completed")),
                         "category": "user",
                     }
@@ -715,7 +798,9 @@ class CalendarPlugin(Star):
                     "next": dt_str(nxt),
                     "color": ev.get("color", "blue"),
                     "repeat": ev.get("repeat", "none"),
+                    "repeat_until": ev.get("repeat_until"),
                     "note": ev.get("note", ""),
+                    "owner": ev.get("owner", ""),
                 }
             )
         results.sort(key=lambda r: r["next"])
@@ -987,6 +1072,15 @@ class CalendarPlugin(Star):
                         logger.exception("[calendar] window state build failed")
                         self._send(500, {"error": "state build failed"})
                     return
+                if self.path.startswith("/detail"):
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    key = (qs.get("key") or [""])[0]
+                    try:
+                        self._send(200, plugin._window_detail(key))
+                    except Exception:
+                        logger.exception("[calendar] window detail build failed")
+                        self._send(500, {"error": "detail build failed"})
+                    return
                 self._send(404, {"error": "not found"})
 
             def do_POST(self) -> None:  # noqa: N802
@@ -1033,6 +1127,9 @@ class CalendarPlugin(Star):
         with self._lock:
             mode = self._state.get("display_mode", "panel")
             theme = self._state.get("theme", "light")
+            custom = self._state.get("custom_colors")
+            if not self._valid_custom_colors(custom):
+                custom = None
         # Live-read so toggling window_snap in settings applies within one poll.
         snap = getattr(self, "_snap", True)
         try:
@@ -1057,6 +1154,61 @@ class CalendarPlugin(Star):
             "glass": glass,
             "panel_url": self._panel_url,
             "display_mode": mode,
+            "custom_colors": custom,
+        }
+
+    def _window_detail(self, key: str) -> dict:
+        """One event's full popup content, pre-formatted for the mini-window."""
+        key = str(key or "")
+        if not key:
+            return {"error": "缺少 key"}
+        with self._lock:
+            ev = self._find_event(key)
+            remind_default = self._remind_default
+        if ev is None:
+            return {"error": "日程不存在"}
+        try:
+            s = dt.datetime.fromisoformat(str(ev.get("start") or ""))
+            e_ = dt.datetime.fromisoformat(str(ev.get("end") or ""))
+            multi = e_.date() > s.date()
+            if ev.get("all_day"):
+                dt_txt = f"{s:%m-%d} 全天"
+                if multi:
+                    dt_txt = f"{s:%m-%d} → {e_:%m-%d} 全天"
+            elif multi:
+                dt_txt = f"{s:%m-%d %H:%M} → {e_:%m-%d %H:%M}"
+            else:
+                dt_txt = f"{s:%m-%d %H:%M} ~ {e_:%H:%M}"
+        except (TypeError, ValueError):
+            dt_txt = f"{ev.get('start')} ~ {ev.get('end')}"
+        rep = str(ev.get("repeat") or "none")
+        rep_txt = {"none": "单次", "daily": "每天", "weekly": "每周", "monthly": "每月"}.get(rep, rep)
+        if rep != "none":
+            until = str(ev.get("repeat_until") or "")
+            if until:
+                try:
+                    rep_txt += f" · 至 {dt.datetime.fromisoformat(until):%Y-%m-%d}"
+                except (TypeError, ValueError):
+                    rep_txt += f" · 至 {until}"
+            else:
+                rep_txt += " · 无终止日期"
+        rm = ev.get("remind_minutes")
+        if rm is None:
+            rm_txt = f"默认 · 提前 {remind_default} 分钟"
+        elif not rm:
+            rm_txt = "已关闭"
+        else:
+            rm_txt = f"提前 {rm} 分钟"
+        return {
+            "event": {
+                "id": key,
+                "title": str(ev.get("title") or ""),
+                "dt": dt_txt,
+                "repeat": rep_txt,
+                "remind": rm_txt,
+                "note": str(ev.get("note") or ""),
+                "done": bool(ev.get("done")),
+            }
         }
 
     def _window_action(self, payload: dict) -> dict:
@@ -1188,6 +1340,8 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/bg", self._api_bg, ["GET"], "Panel background image")
         reg(f"/{PLUGIN_NAME}/bg", self._api_bg_set, ["POST"], "Set panel background")
         reg(f"/{PLUGIN_NAME}/bg/clear", self._api_bg_clear, ["POST"], "Remove panel background")
+        reg(f"/{PLUGIN_NAME}/colors", self._api_colors_set, ["POST"], "Set custom primary/secondary colors")
+        reg(f"/{PLUGIN_NAME}/colors/clear", self._api_colors_clear, ["POST"], "Reset custom colors to default")
 
     async def _api_events(self):
         q = request.query.get("q", "") or ""
@@ -1284,6 +1438,7 @@ class CalendarPlugin(Star):
     async def _api_config(self):
         with self._lock:
             mode = self._state.get("display_mode", "panel")
+            custom = self._state.get("custom_colors")
         return json_response(
             {
                 "day_start_hour": self._day_start_hour,
@@ -1293,6 +1448,7 @@ class CalendarPlugin(Star):
                 "display_mode": mode,
                 "window_running": self._win_proc is not None and self._win_proc.poll() is None,
                 "timezone": self._tz,
+                "custom_colors": custom if self._valid_custom_colors(custom) else None,
             }
         )
 
@@ -1443,6 +1599,26 @@ class CalendarPlugin(Star):
         self._bg_store(info)
         return json_response({"ok": True})
 
+    async def _api_colors_set(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        primary = _norm_hex(body.get("primary"))
+        secondary = _norm_hex(body.get("secondary"))
+        if not primary or not secondary:
+            return error_response("primary/secondary 必须是合法颜色（#rrggbb）")
+        with self._lock:
+            self._state["custom_colors"] = {"primary": primary, "secondary": secondary}
+            self._save_state()
+        return json_response({"ok": True, "custom_colors": self._state["custom_colors"]})
+
+    async def _api_colors_clear(self):
+        with self._lock:
+            self._state.pop("custom_colors", None)
+            self._save_state()
+        return json_response({"ok": True, "custom_colors": None})
+
     # ── LLM tools ────────────────────────────────────────────────────────
 
     def _register_tools(self) -> None:
@@ -1482,14 +1658,42 @@ class CalendarPlugin(Star):
             except Exception:
                 pass
 
+    _REPEAT_UNTIL_WORDS = ("持续到", "截止到", "截至到", "直到", "结束于", "到……为止")
+
     def tool_create_event(self, **kwargs) -> str:
+        rep = str(kwargs.get("repeat") or "none")
+        note = str(kwargs.get("note") or "")
+        until = str(kwargs.get("repeat_until") or "").strip()
+        if (
+            rep in ("daily", "weekly", "monthly")
+            and not until
+            and any(w in note for w in self._REPEAT_UNTIL_WORDS)
+        ):
+            return (
+                "创建失败：备注提到「持续到/直到/截止到某日」但缺少 repeat_until 参数。"
+                "请把终止日期解析为 repeat_until（YYYY-MM-DD）传入后重试；"
+                "解析不出时先向用户澄清，禁止创建不终止的重复日程。"
+            )
         try:
             ev = self.create_event(kwargs, created_by="llm")
         except (ValueError, TypeError) as exc:
             return f"创建失败：{exc}。请向用户说明原因，修正后重新走「复述确认」流程再调用。"
+        if ev.get("repeat", "none") != "none" and not ev.get("repeat_until"):
+            logger.warning(
+                "[calendar] repeating event created without repeat_until: %s (%s)",
+                ev.get("title"),
+                ev.get("id"),
+            )
         start = parse_datetime(ev["start"])
         when = f"{start:%Y-%m-%d} 全天" if ev.get("all_day") else f"{start:%Y-%m-%d %H:%M}"
-        rep = "" if ev.get("repeat", "none") == "none" else f"，{ev['repeat']} 重复"
+        rep_out = ev.get("repeat", "none")
+        rep = "" if rep_out == "none" else f"，{rep_out} 重复"
+        if rep_out != "none":
+            rep += (
+                f"，截止 {ev['repeat_until'][:10]}"
+                if ev.get("repeat_until")
+                else "，无终止日期将一直重复"
+            )
         rm = ev.get("remind_minutes")
         rm_txt = "" if not rm else f"，提前 {rm} 分钟提醒"
         return f"已创建：「{ev['title']}」{when}{rep}{rm_txt}（id={ev['id']}）"
@@ -1518,7 +1722,18 @@ class CalendarPlugin(Star):
                 span = f"{start:%m-%d} 全天"
             else:
                 span = f"{start:%m-%d %H:%M}-{end:%H:%M}"
-            rows.append(f"[{ev['id']}] {span} {ev['title']}")
+            rp = ""
+            rep_out = ev.get("repeat", "none")
+            if rep_out != "none":
+                rp = (
+                    f" ·{rep_out}重复·截止{ev['repeat_until'][:10]}"
+                    if ev.get("repeat_until")
+                    else f" ·{rep_out}重复·无终止"
+                )
+            rows.append(
+                f"[{ev['id']}] {span} {ev['title']}{rp}"
+                + (f" ·@{ev['owner']}" if ev.get("owner") else "")
+            )
         if kwargs.get("query"):
             ql = str(kwargs["query"]).lower()
             rows = [r for r in rows if ql in r.lower()]
@@ -1530,6 +1745,18 @@ class CalendarPlugin(Star):
         event_id = str(kwargs.pop("id", "") or "")
         if not event_id:
             return "更新失败：缺少 id（先用 list_events 查询）。"
+        rep = str(kwargs.get("repeat") or "none")
+        note = str(kwargs.get("note") or "")
+        until = str(kwargs.get("repeat_until") or "").strip()
+        if (
+            rep in ("daily", "weekly", "monthly")
+            and not until
+            and any(w in note for w in self._REPEAT_UNTIL_WORDS)
+        ):
+            return (
+                "更新失败：备注提到「持续到/直到/截止到某日」但缺少 repeat_until 参数。"
+                "请把终止日期解析为 repeat_until 传入；解析不出时先向用户澄清。"
+            )
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         if not kwargs:
             return "更新失败：没有要修改的字段。"
@@ -1539,7 +1766,15 @@ class CalendarPlugin(Star):
             return f"更新失败：{exc}"
         except (ValueError, TypeError) as exc:
             return f"更新失败：{exc}。请修正后重新确认再调用。"
-        return f"已更新：「{ev['title']}」{ev['start']}（id={ev['id']}）"
+        rep_out = ev.get("repeat", "none")
+        rep_txt = ""
+        if rep_out != "none":
+            rep_txt = (
+                f"（{rep_out} 重复，截止 {ev['repeat_until'][:10]}）"
+                if ev.get("repeat_until")
+                else f"（{rep_out} 重复，无终止日期将一直重复）"
+            )
+        return f"已更新：「{ev['title']}」{ev['start']}{rep_txt}（id={ev['id']}）"
 
     def tool_delete_event(self, **kwargs) -> str:
         event_id = str(kwargs.get("id") or "")
