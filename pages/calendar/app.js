@@ -36,6 +36,8 @@
     aiBusy: false,
     bg: { image: "", opacity: 0.3 },
     customColors: null, // {primary, secondary} | null = default palette
+    sideDiary: [], // 分栏侧栏：选中日期的日记
+    sideDiaryDate: "",
   };
 
   // ── date helpers ────────────────────────────────────────────────
@@ -650,7 +652,9 @@
 
     const list = document.createElement("div");
     list.className = "ds-list";
-    if (!evs.length) {
+    const dys =
+      S.sideDiaryDate === key && Array.isArray(S.sideDiary) ? S.sideDiary : [];
+    if (!evs.length && !dys.length) {
       const empty = document.createElement("div");
       empty.className = "ds-empty";
       empty.textContent = isToday ? "今天暂无安排" : "当天暂无安排";
@@ -688,6 +692,33 @@
       }
       list.appendChild(pill);
     }
+    if (dys.length) {
+      const hd = document.createElement("div");
+      hd.className = "ds-subhead";
+      hd.textContent = `日记 · ${dys.length}`;
+      list.appendChild(hd);
+      for (const d of dys) {
+        const p = document.createElement("div");
+        p.className = "ds-pill diary";
+        p.dataset.did = d.id;
+        const t = document.createElement("span");
+        t.className = "t";
+        t.textContent = String(d.created_at || "").slice(11, 16) || "日记";
+        const n = document.createElement("span");
+        n.className = "n";
+        n.textContent = d.title || "(无标题)";
+        p.appendChild(t);
+        p.appendChild(n);
+        if (d.pinned) {
+          const pk = document.createElement("span");
+          pk.className = "t";
+          pk.textContent = "★";
+          pk.style.marginLeft = "auto";
+          p.appendChild(pk);
+        }
+        list.appendChild(p);
+      }
+    }
     root.appendChild(list);
 
     const status = document.createElement("div");
@@ -696,12 +727,13 @@
       ? sideSel.confirmDel
         ? "再点 ✕ 一次确认删除"
         : "点 ✓ 标记完成 · ✕ 删除"
-      : "点击日程可标记完成或删除";
+      : "点日程完成/删除 · 点日记打开";
     root.appendChild(status);
   }
 
   // ── render dispatcher ──────────────────────────────────────────
   function render() {
+    if (CD.active || DI.active) return; // 标签页期间不重绘日历视图
     const sy = window.scrollY || document.documentElement.scrollTop || 0;
     const v = S.split ? "month" : S.view;
     $(".views").classList.toggle("split", S.split);
@@ -738,8 +770,10 @@
     if (S.split || v === "day") {
       $("#day-side").hidden = !S.split;
       $("#day-view").hidden = S.split;
-      if (S.split) renderSide();
-      else renderDay("#day-view");
+      if (S.split) {
+        renderSide();
+        loadSideDiary();
+      } else renderDay("#day-view");
     }
 
     // Re-rendering collapses scrollable content; restore the page scroll
@@ -933,6 +967,14 @@
 
   // ── navigation ─────────────────────────────────────────────────
   $("#btn-ctx").addEventListener("click", () => {
+    if (CD.active) {
+      setCountdownTab(false);
+      return;
+    }
+    if (DI.active) {
+      setDiaryTab(false);
+      return;
+    }
     if (S.view === "day") setView("month");
     else if (S.view === "month") setView("year");
   });
@@ -1027,6 +1069,10 @@
   $("#day-side").addEventListener("click", async (e) => {
     const act = e.target.closest(".ds-act");
     const pill = e.target.closest(".ds-pill");
+    if (pill?.dataset.did) {
+      openDiaryFromSide(pill.dataset.did);
+      return;
+    }
     if (!pill?.dataset.id) return;
     const id = pill.dataset.id;
     const ev = (S.range.events || []).find((x) => x.id === id);
@@ -1622,6 +1668,547 @@
   });
 
   // ── boot ───────────────────────────────────────────────────────
+  // ── countdown tab（页内标签，复用 GET /countdown 与统一视觉） ──
+  const CD_PAGE = 8; // 2×4 方块一页
+  const CD = {
+    unit: "day",
+    items: [],
+    total: 0,
+    page: 0,
+    active: false,
+    seq: 0,
+    cardRefs: [],
+    item: null,
+  };
+  const UNIT_CN = { week: "按周", day: "按天", hour: "按小时" };
+  const REPEAT_CN = { daily: "每天", weekly: "每周", monthly: "每月" };
+  const cdEsc = (s) =>
+    String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  const cdWhen = (str) => fmtMs(toLocalMs(str));
+  const cdRepeatTag = (it) => {
+    let s = REPEAT_CN[it.repeat] || "";
+    if (s && it.repeat_until) {
+      const d = new Date(toLocalMs(it.repeat_until));
+      if (Number.isFinite(d.getTime())) {
+        s += ` 至 ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      }
+    }
+    return s;
+  };
+  // 单单位取整：不足一单位显示「不到1X」
+  const cdFmt = (sec) => {
+    const unit = CD.unit;
+    if (unit === "week") {
+      const w = Math.floor(sec / 604800);
+      return w > 0 ? { num: String(w), unit: "周" } : { num: "不到", unit: "1周" };
+    }
+    if (unit === "hour") {
+      const h = Math.floor(sec / 3600);
+      return h > 0 ? { num: String(h), unit: "小时" } : { num: "不到", unit: "1小时" };
+    }
+    const d = Math.floor(sec / 86400);
+    return d > 0 ? { num: String(d), unit: "天" } : { num: "不到", unit: "1天" };
+  };
+  const cdPages = () => Math.max(1, Math.ceil(CD.total / CD_PAGE));
+  const cdTick = () => {
+    for (const r of CD.cardRefs) {
+      const sec = Math.max(0, Math.round((r.item._t - Date.now()) / 1000));
+      r.card.classList.toggle("ongoing", sec <= 0);
+      if (sec <= 0) {
+        r.num.textContent = "进行中";
+      } else {
+        const f = cdFmt(sec);
+        r.num.innerHTML = `${cdEsc(f.num)}<small>${cdEsc(f.unit)}</small>`;
+      }
+    }
+  };
+  const cdRender = () => {
+    const grid = $("#cd-grid");
+    grid.innerHTML = "";
+    CD.cardRefs = [];
+    const start = CD.page * CD_PAGE;
+    const slice = CD.items.slice(start, start + CD_PAGE);
+    for (const it of slice) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const tag = cdRepeatTag(it);
+      card.innerHTML = `
+        <span class="bar" style="background:var(--c-${cdEsc(it.color || "blue")})"></span>
+        ${tag ? `<span class="cd-tag">${cdEsc(tag)}</span>` : ""}
+        <div class="cd-num"></div>
+        <div class="cd-when">${cdEsc(cdWhen(it.target))}</div>
+        <div class="cd-title">${cdEsc(it.title || "")}</div>
+        ${it.owner ? `<div class="cd-owner">${cdEsc(it.owner)}</div>` : ""}`;
+      card.addEventListener("click", () => cdOpenDetail(it));
+      grid.appendChild(card);
+      CD.cardRefs.push({ card, num: card.querySelector(".cd-num"), item: it });
+    }
+    for (let i = slice.length; i < CD_PAGE; i++) {
+      const e = document.createElement("div");
+      e.className = "slot-empty";
+      e.textContent = "暂无待办";
+      grid.appendChild(e);
+    }
+    cdTick();
+    $("#cd-ind").textContent = `${CD.page + 1} / ${cdPages()}`;
+    $("#cd-prev").disabled = CD.page <= 0;
+    $("#cd-next").disabled = CD.page >= cdPages() - 1;
+  };
+  const cdLoad = async () => {
+    const seq = ++CD.seq;
+    try {
+      const data = await apiGet("countdown");
+      if (seq !== CD.seq) return;
+      CD.unit = data.unit || CD.unit;
+      CD.items = data.items || [];
+      CD.total = data.total ?? CD.items.length;
+      for (const it of CD.items) it._t = toLocalMs(it.target);
+      const ps = cdPages();
+      if (CD.page > ps - 1) CD.page = Math.max(0, ps - 1);
+      $("#cd-unit").textContent = UNIT_CN[CD.unit] || "按天";
+      $("#cd-unit").hidden = false;
+      $("#cd-hint").textContent = `共 ${CD.total} 条 · 每 30 秒自动刷新`;
+      cdRender();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+  const cdOpenDetail = (item) => {
+    CD.item = item;
+    $("#cd-title").value = item.title || "";
+    $("#cd-time").value = `${cdWhen(item.start)} ~ ${cdWhen(item.end)}${
+      item.all_day ? "（全天）" : ""
+    }`;
+    $("#cd-owner").value = item.owner || "";
+    $("#cd-note").value = item.note || "";
+    $("#cd-del").textContent = "删除";
+    $("#cd-del").dataset.armed = "";
+    $("#cd-modal").hidden = false;
+  };
+  const cdCloseDetail = () => {
+    $("#cd-modal").hidden = true;
+    CD.item = null;
+  };
+  $("#cd-done").addEventListener("click", async () => {
+    if (!CD.item) return;
+    try {
+      await apiPost("events/update", { id: CD.item.id, done: true });
+      cdCloseDetail();
+      toast("已标记完成");
+      await cdLoad();
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  $("#cd-del").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "确认删除？";
+      return;
+    }
+    if (!CD.item) return;
+    try {
+      await apiPost("events/delete", { id: CD.item.id });
+      cdCloseDetail();
+      toast("已删除");
+      await cdLoad();
+    } catch (e2) {
+      toast(errText(e2));
+    }
+  });
+  $("#cd-modal").addEventListener("click", (e) => {
+    if (e.target === $("#cd-modal")) cdCloseDetail();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#cd-modal").hidden) cdCloseDetail();
+  });
+  $("#cd-prev").addEventListener("click", () => {
+    if (CD.page > 0) {
+      CD.page -= 1;
+      cdRender();
+    }
+  });
+  $("#cd-next").addEventListener("click", () => {
+    if (CD.page < cdPages() - 1) {
+      CD.page += 1;
+      cdRender();
+    }
+  });
+  const setCountdownTab = (on) => {
+    if (CD.active === on) return;
+    if (on && DI.active) setDiaryTab(false); // 标签互斥
+    CD.active = on;
+    $("#btn-countdown").classList.toggle("on", on);
+    $("#cd-view").hidden = !on;
+    $(".views").hidden = on;
+    if (on) {
+      $("#big-title").textContent = "倒计时";
+      cdLoad();
+    } else {
+      render(); // 恢复标题/返回胶囊/视图状态
+    }
+  };
+  $("#btn-countdown").addEventListener("click", () => setCountdownTab(!CD.active));
+  setInterval(() => {
+    if (CD.active && !document.hidden) cdLoad();
+  }, 30000);
+  document.addEventListener("visibilitychange", () => {
+    if (CD.active && !document.hidden) cdLoad();
+  });
+
+  // ── diary tab（邮箱式日记：列表 + 阅读/编辑，#标签 + 搜索 + 导出） ──
+  const DI = {
+    active: false,
+    mode: "read", // read | compose | edit
+    entries: [],
+    tags: [],
+    q: "",
+    selTags: new Set(),
+    current: null,
+    seq: 0,
+  };
+  let dySearchTimer = null;
+
+  const dyExtractTags = (text) => {
+    const out = [];
+    const re = /(?:^|\s)#([^\s#]{1,30})/g;
+    let m;
+    while ((m = re.exec(String(text || "")))) {
+      const t = m[1]
+        .replace(/^[，。！？、；：,.!?;:"'）)】\]》…]+/, "")
+        .replace(/[，。！？、；：,.!?;:"'）)】\]》…]+$/, "");
+      if (t && !out.includes(t)) out.push(t);
+    }
+    return out;
+  };
+  const dyDateLabel = (dateStr) => {
+    const d = new Date(String(dateStr || "") + "T00:00:00");
+    if (!Number.isFinite(d.getTime())) return String(dateStr || "");
+    const diff = dayDiff(d, today());
+    if (diff === 0) return "今天";
+    if (diff === 1) return "昨天";
+    if (d.getFullYear() === today().getFullYear()) {
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+    return dateStr;
+  };
+  const dyDownload = (entry, kind) => {
+    const isMd = kind === "md";
+    const tags = (entry.tags || []).map((t) => `#${t}`).join(" ");
+    const text = isMd
+      ? `# ${entry.title}\n\n> ${entry.date}${tags ? " · " + tags : ""}\n\n${entry.content}\n`
+      : `${entry.title}\n${entry.date}${tags ? "  " + tags : ""}\n\n${entry.content}\n`;
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${entry.title || "日记"}-${entry.date || ""}.${isMd ? "md" : "txt"}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(isMd ? "已导出 Markdown" : "已导出文本");
+  };
+  const dyRenderTags = () => {
+    const root = $("#dy-tags");
+    if (!root) return;
+    let html = `<button class="dy-chip${DI.selTags.size ? "" : " on"}" data-tag="">全部</button>`;
+    for (const t of DI.tags) {
+      const on = DI.selTags.has(t.tag) ? " on" : "";
+      html += `<button class="dy-chip${on}" data-tag="${cdEsc(t.tag)}">#${cdEsc(
+        t.tag,
+      )}<span class="n">${t.count}</span></button>`;
+    }
+    root.innerHTML = html;
+  };
+  const dyItemHtml = (e) => {
+    const tags = (e.tags || []).map((t) => `<span>#${cdEsc(t)}</span>`).join("");
+    const snippet = cdEsc(
+      String(e.content || "").replace(/\s+/g, " ").slice(0, 60),
+    );
+    const sel = DI.current && DI.current.id === e.id ? " sel" : "";
+    return `<div class="dy-item${sel}" data-id="${cdEsc(e.id)}">
+      <div class="t">${e.pinned ? '<span class="pin">★</span>' : ""}${cdEsc(
+        e.title || "(无标题)",
+      )}</div>
+      <div class="s">${snippet || "(无正文)"}</div>
+      ${tags ? `<div class="tg">${tags}</div>` : ""}
+    </div>`;
+  };
+  const dyRenderList = () => {
+    const root = $("#dy-list");
+    if (!root) return;
+    if (!DI.entries.length) {
+      root.innerHTML =
+        '<div class="dy-empty">没有匹配的日记<br/>点「新写日记」开始记录</div>';
+      return;
+    }
+    let html = "";
+    const pinned = DI.entries.filter((e) => e.pinned);
+    const rest = DI.entries.filter((e) => !e.pinned);
+    if (pinned.length) {
+      html += '<div class="dy-date">置顶</div>' + pinned.map(dyItemHtml).join("");
+    }
+    let lastGroup = null;
+    for (const e of rest) {
+      const g = e.date || "";
+      if (g !== lastGroup) {
+        html += `<div class="dy-date">${cdEsc(dyDateLabel(g))}</div>`;
+        lastGroup = g;
+      }
+      html += dyItemHtml(e);
+    }
+    root.innerHTML = html;
+  };
+  const dySave = async () => {
+    const title = $("#dy-in-title").value.trim();
+    if (!title) {
+      toast("标题不能为空");
+      return;
+    }
+    const body = { title, content: $("#dy-in-content").value };
+    const dateVal = $("#dy-in-date").value;
+    if (dateVal) body.date = dateVal;
+    try {
+      if (DI.mode === "edit" && DI.current) {
+        const r = await apiPost("diary/update", { id: DI.current.id, ...body });
+        DI.current = r.entry;
+        toast("已保存");
+      } else {
+        const r = await apiPost("diary", body);
+        DI.current = r.entry;
+        toast("已写入日记");
+      }
+      DI.mode = "read";
+      await dyLoad();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+  const dyRenderPane = () => {
+    const root = $("#dy-pane");
+    if (!root) return;
+    if (DI.mode === "compose" || DI.mode === "edit") {
+      const e = DI.mode === "edit" ? DI.current : null;
+      root.innerHTML = `
+        <div class="dy-editor">
+          <h2>${DI.mode === "edit" ? "编辑日记" : "新日记"}</h2>
+          <label>标题
+            <input id="dy-in-title" maxlength="200" value="${cdEsc(
+              e?.title || "",
+            )}" placeholder="给这一天起个标题" />
+          </label>
+          <div class="row">
+            <label>日期
+              <input id="dy-in-date" type="date" value="${cdEsc(
+                e?.date || dayKey(today()),
+              )}" />
+            </label>
+          </div>
+          <label>正文（写 #标签 自动生成标签，如 #学习 #碎碎念）
+            <textarea id="dy-in-content" maxlength="20000" placeholder="今天发生了什么…">${cdEsc(
+              e?.content || "",
+            )}</textarea>
+          </label>
+          <div class="dy-preview" id="dy-preview"></div>
+          <div class="dy-actions">
+            <button type="button" class="btn" data-act="cancel">取消</button>
+            <div class="spacer"></div>
+            <button type="button" class="btn primary" data-act="save">保存</button>
+          </div>
+        </div>`;
+      const upd = () => {
+        const tags = dyExtractTags(
+          $("#dy-in-title").value + "\n" + $("#dy-in-content").value,
+        );
+        $("#dy-preview").innerHTML = tags
+          .map((t) => `<span>#${cdEsc(t)}</span>`)
+          .join("");
+      };
+      $("#dy-in-title").addEventListener("input", upd);
+      $("#dy-in-content").addEventListener("input", upd);
+      upd();
+      root.querySelector('[data-act="save"]').addEventListener("click", dySave);
+      root
+        .querySelector('[data-act="cancel"]')
+        .addEventListener("click", () => {
+          DI.mode = "read";
+          dyRenderPane();
+        });
+      return;
+    }
+    const e = DI.current;
+    if (!e) {
+      root.innerHTML =
+        '<div class="dy-empty">选择左侧日记阅读<br/>或点「＋ 新写日记」</div>';
+      return;
+    }
+    const tags = (e.tags || [])
+      .map((t) => `<span class="tg">#${cdEsc(t)}</span>`)
+      .join(" ");
+    root.innerHTML = `
+      <h2>${cdEsc(e.title || "(无标题)")}</h2>
+      <div class="dy-meta">${cdEsc(e.date || "")} · 创建 ${cdEsc(
+        String(e.created_at || "").replace("T", " ").slice(0, 16),
+      )} ${tags}${e.pinned ? " · ★ 置顶" : ""}</div>
+      <div class="dy-content">${cdEsc(e.content || "(无内容)")}</div>
+      <div class="dy-actions">
+        <button type="button" class="btn ghost" data-act="del">删除</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn" data-act="pin">${e.pinned ? "取消置顶" : "置顶"}</button>
+        <button type="button" class="btn" data-act="md">导出MD</button>
+        <button type="button" class="btn" data-act="txt">导出TXT</button>
+        <button type="button" class="btn" data-act="edit">编辑</button>
+      </div>`;
+    root.querySelector('[data-act="edit"]').addEventListener("click", () => {
+      DI.mode = "edit";
+      dyRenderPane();
+    });
+    root
+      .querySelector('[data-act="pin"]')
+      .addEventListener("click", async () => {
+        try {
+          const r = await apiPost("diary/update", {
+            id: e.id,
+            pinned: !e.pinned,
+          });
+          DI.current = r.entry;
+          toast(r.entry.pinned ? "已置顶" : "已取消置顶");
+          await dyLoad();
+        } catch (err) {
+          toast(errText(err));
+        }
+      });
+    root
+      .querySelector('[data-act="md"]')
+      .addEventListener("click", () => dyDownload(e, "md"));
+    root
+      .querySelector('[data-act="txt"]')
+      .addEventListener("click", () => dyDownload(e, "txt"));
+    const delBtn = root.querySelector('[data-act="del"]');
+    delBtn.addEventListener("click", async () => {
+      if (delBtn.dataset.armed !== "1") {
+        delBtn.dataset.armed = "1";
+        delBtn.textContent = "确认删除？";
+        return;
+      }
+      try {
+        await apiPost("diary/delete", { id: e.id });
+        DI.current = null;
+        DI.mode = "read";
+        toast("已删除");
+        await dyLoad();
+      } catch (err) {
+        toast(errText(err));
+      }
+    });
+  };
+  const dyLoad = async () => {
+    const seq = ++DI.seq;
+    try {
+      const params = {};
+      if (DI.q) params.q = DI.q;
+      if (DI.selTags.size) params.tag = [...DI.selTags].join(",");
+      const [listRes, tagRes] = await Promise.all([
+        apiGet("diary", params),
+        apiGet("diary/tags"),
+      ]);
+      if (seq !== DI.seq) return;
+      DI.entries = listRes.entries || [];
+      DI.tags = tagRes.tags || [];
+      if (DI.current) {
+        const fresh = DI.entries.find((x) => x.id === DI.current.id);
+        if (fresh) DI.current = fresh;
+      }
+      dyRenderTags();
+      dyRenderList();
+      if (DI.mode === "read") dyRenderPane();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+  const setDiaryTab = (on) => {
+    if (DI.active === on) return;
+    if (on && CD.active) setCountdownTab(false); // 标签互斥
+    DI.active = on;
+    $("#btn-diary").classList.toggle("on", on);
+    $("#diary-view").hidden = !on;
+    $(".views").hidden = on;
+    if (on) {
+      $("#big-title").textContent = "日记";
+      dyLoad();
+    } else {
+      render(); // 恢复标题/返回胶囊/视图状态
+    }
+  };
+  const openDiaryFromSide = (id) => {
+    const entry = (S.sideDiary || []).find((d) => d.id === id);
+    if (!entry) return;
+    setDiaryTab(true);
+    DI.mode = "read";
+    DI.current = entry;
+    dyRenderPane();
+    dyRenderList();
+  };
+  const loadSideDiary = async () => {
+    if (!S.split) return;
+    const key = dayKey(new Date(S.y, S.m - 1, S.d));
+    try {
+      const r = await apiGet("diary", { date: key });
+      S.sideDiary = r.entries || [];
+      S.sideDiaryDate = key;
+    } catch (e) {
+      S.sideDiary = [];
+      S.sideDiaryDate = "";
+    }
+    if (S.split && !CD.active && !DI.active) renderSide();
+  };
+
+  // diary listeners
+  $("#btn-diary").addEventListener("click", () => setDiaryTab(!DI.active));
+  $("#dy-new").addEventListener("click", () => {
+    DI.mode = "compose";
+    dyRenderPane();
+    $("#dy-in-title")?.focus();
+  });
+  $("#dy-search").addEventListener("input", (e) => {
+    clearTimeout(dySearchTimer);
+    dySearchTimer = setTimeout(() => {
+      DI.q = String(e.target.value || "").trim();
+      dyLoad();
+    }, 300);
+  });
+  $("#dy-tags").addEventListener("click", (e) => {
+    const chip = e.target.closest(".dy-chip");
+    if (!chip) return;
+    const tag = chip.dataset.tag || "";
+    if (!tag) DI.selTags.clear();
+    else if (DI.selTags.has(tag)) DI.selTags.delete(tag);
+    else DI.selTags.add(tag);
+    dyLoad();
+  });
+  $("#dy-list").addEventListener("click", (e) => {
+    const item = e.target.closest(".dy-item");
+    if (!item?.dataset.id) return;
+    const entry = DI.entries.find((x) => x.id === item.dataset.id);
+    if (!entry) return;
+    DI.current = entry;
+    DI.mode = "read";
+    dyRenderList();
+    dyRenderPane();
+  });
+  setInterval(() => {
+    if (DI.active && DI.mode === "read" && !document.hidden) dyLoad();
+  }, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (DI.active && DI.mode === "read" && !document.hidden) dyLoad();
+  });
+
   (async function boot() {
     const applyTheme = (isDark) => {
       document.documentElement.dataset.theme = isDark ? "dark" : "light";

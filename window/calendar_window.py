@@ -876,13 +876,14 @@ class CalendarWindow:
             inner = tk.Frame(cv, bg=t["card"], padx=10, pady=7)
             # Actions are packed FIRST (right side) so a long title can never
             # push them out of the window; info is packed last and takes rest.
+            # 三个文字按钮（从右到左）：删除 / 推迟 / 完成
             del_btn = tk.Label(
                 inner,
-                text="✕",
-                font=("Segoe UI", 10),
+                text="删除",
+                font=("Microsoft YaHei UI", 8),
                 bg=t["card"],
                 fg="#E5484D",
-                padx=3,
+                padx=2,
                 cursor="hand2",
             )
             del_btn.pack(side="right")
@@ -891,30 +892,42 @@ class CalendarWindow:
             )
             snz_btn = tk.Label(
                 inner,
-                text="5分",
+                text="推迟",
                 font=("Microsoft YaHei UI", 8),
                 bg=t["card"],
                 fg=t["sub"],
-                padx=4,
+                padx=2,
                 cursor="hand2",
             )
-            snz_btn.pack(side="right")
+            snz_btn.pack(side="right", padx=(8, 0))
             snz_btn.bind(
                 "<Button-1>", lambda _e, k=key: self._card_action(k, "snooze")
             )
-            done_cv = tk.Canvas(
+            done_btn = tk.Label(
                 inner,
-                width=20,
-                height=20,
+                text="完成",
+                font=("Microsoft YaHei UI", 8, "bold"),
                 bg=t["card"],
-                highlightthickness=0,
+                fg=t["accent"],
+                padx=2,
                 cursor="hand2",
             )
-            done_cv.pack(side="right", padx=(5, 2))
-            done_cv.bind("<Configure>", lambda _e, c=done_cv: self._paint_done(c))
-            done_cv.bind(
-                "<Button-1>", lambda _e, k=key: self._card_action(k, "done")
+            done_btn.pack(side="right", padx=(8, 0))
+            done_btn.bind(
+                "<Button-1>", lambda _e, k=key: self._card_action(k, "card_done")
             )
+            for _b, _c in (
+                (done_btn, t["accent"]),
+                (snz_btn, t["sub"]),
+                (del_btn, "#E5484D"),
+            ):
+                _b.bind(
+                    "<Enter>",
+                    lambda _e, b=_b, c=_c: b.configure(
+                        fg=self._detail_mix(c, t["card"], 0.7)
+                    ),
+                )
+                _b.bind("<Leave>", lambda _e, b=_b, c=_c: b.configure(fg=c))
             info = tk.Frame(inner, bg=t["card"])
             info.pack(side="left", fill="x", expand=True)
             tk.Label(
@@ -1029,6 +1042,7 @@ class CalendarWindow:
         self._repaint_pills()
         self.status_lbl.configure(text=self._status_text())
         self._fit()
+        self.root.after(80, self._fit_soon)
 
     # ── pill painting ───────────────────────────────────────────────────
 
@@ -1041,21 +1055,6 @@ class CalendarWindow:
             x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
         ]
         return cv.create_polygon(points, smooth=True, **kw)
-
-    def _paint_done(self, cv: tk.Canvas) -> None:
-        w, h = cv.winfo_width(), cv.winfo_height()
-        if w <= 2 or h <= 2:
-            return
-        t = self._theme()
-        cv.delete("all")
-        cv.create_oval(1, 1, w - 2, h - 2, fill=t["accent"], outline="")
-        cv.create_text(
-            w / 2,
-            h / 2,
-            text="✓",
-            fill="#FFFFFF",
-            font=("Segoe UI", 10, "bold"),
-        )
 
     def _paint_pill(self, cv: tk.Canvas, ln: dict) -> None:
         w = cv.winfo_width()
@@ -1539,6 +1538,18 @@ class CalendarWindow:
             y = max(wa_t, wa_b - h - 40)
         self.root.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
         self._apply_round_region()
+
+    def _fit_soon(self) -> None:
+        """Second fit pass after the event loop settled.
+
+        Card canvases only report their final height once <Configure> has been
+        delivered, so the immediate _fit() underestimates and the last pill /
+        "+N" row would be clipped. Re-fit once the layout has settled.
+        """
+        if self._open_anim_after is not None:
+            self.root.after(120, self._fit_soon)
+            return
+        self._fit()
 
     # ── actions ─────────────────────────────────────────────────────────
 

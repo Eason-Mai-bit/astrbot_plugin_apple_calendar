@@ -11,5 +11,6 @@
   "snooze_minutes": {"description": "提醒卡片推迟的固定分钟数", "type": "int", "default": 5, "options": [5]},
   "holiday_override_path": {"description": "可选：休/班角标兜底 JSON 路径（当 chinese-calendar 日历年份不覆盖时使用）", "type": "string", "default": ""},
   "demo_on_start": {"description": "首次加载数据为空时自动填入示例日程（含国庆假期跨天长条测试数据）", "type": "bool", "default": true},
-  "webui_base_url": {"description": "AstrBot WebUI 根地址（桌面小窗/托盘「打开完整面板」使用）", "type": "string", "default": "http://127.0.0.1:6185"}
+  "webui_base_url": {"description": "AstrBot WebUI 根地址（桌面小窗/托盘「打开完整面板」使用）", "type": "string", "default": "http://127.0.0.1:6185"},
+  "countdown_unit": {"description": "倒计时页显示单位（周/天/小时，单单位取整）", "type": "string", "default": "天", "options": ["周", "天", "小时"]}
 }

@@ -1,0 +1,380 @@
+/* Countdown page — same design tokens as the calendar page. */
+
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+    "Microsoft YaHei", "Segoe UI", sans-serif;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --border: rgba(15, 23, 42, 0.1);
+  --text: #1c1e23;
+  --text-2: #6c7382;
+  --text-3: #a7aebc;
+  --today: #e5484d;
+  --today-text: #ffffff;
+  --rest-bg: rgba(229, 72, 77, 0.12);
+  --rest-fg: #c2453f;
+  --work-bg: rgba(37, 99, 235, 0.1);
+  --work-fg: #2f5fcb;
+  --deep-fill: #dce6f8;
+  --deep-text: #26406e;
+  --shallow-fill: #eef1f6;
+  --shallow-text: #6b7688;
+  --shallow-strong: #a9b2c4;
+  --accent: #2563eb;
+  --danger: #e5484d;
+  --c-blue: #3e6bb0;
+  --c-teal: #2f7a86;
+  --c-indigo: #5560b2;
+  --c-slate: #5c6b80;
+  --shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+}
+
+[data-theme="dark"] {
+  --bg: #101216;
+  --surface: #1a1d23;
+  --surface-2: #23272f;
+  --border: rgba(255, 255, 255, 0.09);
+  --text: #e8eaf0;
+  --text-2: #98a0b0;
+  --text-3: #666e7e;
+  --rest-bg: rgba(229, 72, 77, 0.16);
+  --rest-fg: #e9827e;
+  --work-bg: rgba(91, 141, 239, 0.16);
+  --work-fg: #8fb1f5;
+  --deep-fill: rgba(88, 124, 190, 0.32);
+  --deep-text: #d5e1f7;
+  --shallow-fill: rgba(255, 255, 255, 0.07);
+  --shallow-text: #9ba4b5;
+  --shallow-strong: #596173;
+  --accent: #5b8def;
+  --shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  --c-blue: #7fa6e8;
+  --c-teal: #67b7c4;
+  --c-indigo: #9aa2e8;
+  --c-slate: #9aa7bc;
+}
+
+* {
+  box-sizing: border-box;
+}
+/* class-level display rules must not beat the hidden attribute */
+[hidden] {
+  display: none !important;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+}
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+/* ── shared components (identical to the calendar page) ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+  min-height: 34px;
+}
+.pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.15s ease;
+}
+.pill:hover {
+  background: var(--surface-2);
+}
+.pill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.pill:disabled:hover {
+  background: var(--surface);
+}
+.spacer {
+  flex: 1;
+}
+.bottombar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  position: relative;
+  z-index: 1;
+}
+.title-row {
+  position: relative;
+  z-index: 1;
+}
+.big-title {
+  font-size: 30px;
+  font-weight: 800;
+  margin: 6px 0 2px;
+  letter-spacing: 0.5px;
+}
+.sub-hint {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.unit-badge {
+  background: var(--work-bg);
+  color: var(--work-fg);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.page-ind {
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 44px;
+  text-align: center;
+}
+.refresh-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  background: rgba(20, 23, 30, 0.92);
+  color: #fff;
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  z-index: 90;
+  animation: fadeIn 0.15s ease-out;
+  max-width: 86vw;
+  text-align: center;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(9, 12, 18, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  animation: fadeIn 0.15s ease-out;
+}
+.modal {
+  background: var(--surface);
+  border-radius: 16px;
+  width: min(440px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 18px;
+  box-shadow: var(--shadow);
+  animation: modalPop 0.18s cubic-bezier(0.2, 0.8, 0.3, 1.12);
+}
+.modal h2 {
+  font-size: 17px;
+  margin: 0 0 14px;
+}
+.modal label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.btn {
+  border-radius: 9px;
+  padding: 8px 16px;
+  font-size: 13px;
+  background: var(--surface-2);
+  transition: opacity 0.15s ease;
+}
+.btn:hover {
+  opacity: 0.85;
+}
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn.ghost {
+  background: none;
+  color: var(--danger);
+}
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  outline: none;
+  width: 100%;
+}
+.fatal {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-2);
+}
+.bg-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modalPop {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── countdown grid ── */
+.grid {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(118px, auto);
+  gap: 10px;
+  align-content: start;
+  padding-bottom: 6px;
+}
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.15s ease, box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+.card:hover {
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+}
+.card .bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+.cd-num {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--text);
+}
+.cd-num small {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-left: 3px;
+}
+.card.ongoing .cd-num {
+  color: var(--accent);
+}
+.cd-when {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cd-title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: auto;
+}
+.cd-owner {
+  font-size: 11px;
+  color: var(--work-fg);
+  background: var(--work-bg);
+  border-radius: 6px;
+  padding: 1px 7px;
+  align-self: flex-start;
+}
+.cd-tag {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 10px;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.slot-empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 12px;
+  min-height: 96px;
+}

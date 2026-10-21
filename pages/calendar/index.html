@@ -35,6 +35,50 @@
             />
           </svg>
         </button>
+        <button id="btn-countdown" class="icon-btn" title="倒计时">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M5.5 2.8h9M5.5 17.2h9"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              fill="none"
+            />
+            <path
+              d="M6.8 2.8v2.2c0 1.55 3.2 3.15 3.2 5s-3.2 3.45-3.2 5v2.2M13.2 2.8v2.2c0 1.55-3.2 3.15-3.2 5s3.2 3.45 3.2 5v2.2"
+              stroke="currentColor"
+              stroke-width="1.4"
+              fill="none"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path d="M8.4 12.8h3.2L10 16.2z" fill="currentColor" />
+          </svg>
+        </button>
+        <button id="btn-diary" class="icon-btn" title="日记">
+          <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M5.6 3.1h9.1c1.3 0 2.3 1 2.3 2.3v9.3c0 1.3-1 2.3-2.3 2.3H5.6c-1.3 0-2.3-1-2.3-2.3V5.4c0-1.3 1-2.3 2.3-2.3z"
+              stroke="currentColor"
+              stroke-width="1.5"
+              fill="none"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M6.7 3.3v13.4"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+            />
+            <path
+              d="M9.4 7.2h4.9M9.4 10h4.9M9.4 12.8h3.2"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              fill="none"
+            />
+          </svg>
+        </button>
         <button id="btn-ai" class="icon-btn" title="AI 帮建日程">
           <svg class="ico" viewBox="0 0 20 20" aria-hidden="true">
             <path
@@ -102,6 +146,35 @@
             <div class="day-side" id="day-side" hidden></div>
           </main>
         </div>
+        <main class="cd-view" id="cd-view" hidden>
+          <div class="cd-head">
+            <span class="unit-badge" id="cd-unit" hidden></span>
+            <span class="refresh-hint" id="cd-hint"></span>
+          </div>
+          <div class="grid" id="cd-grid"></div>
+          <div class="cd-pager">
+            <button class="pill" id="cd-prev">‹ 上一页</button>
+            <span class="page-ind" id="cd-ind">1 / 1</span>
+            <button class="pill" id="cd-next">下一页 ›</button>
+          </div>
+        </main>
+        <main class="diary-view" id="diary-view" hidden>
+          <div class="dy-toolbar">
+            <button class="pill dy-new" id="dy-new">＋ 新写日记</button>
+            <input
+              class="dy-search"
+              id="dy-search"
+              type="search"
+              placeholder="搜索标题、正文或标签…"
+              autocomplete="off"
+            />
+          </div>
+          <div class="dy-tags" id="dy-tags"></div>
+          <div class="dy-body">
+            <div class="dy-list" id="dy-list"></div>
+            <section class="dy-pane" id="dy-pane"></section>
+          </div>
+        </main>
       </div>
 
       <footer class="bottombar">
@@ -217,6 +290,32 @@
       </form>
     </div>
 
+    <div class="modal-backdrop" id="cd-modal" hidden>
+      <div class="modal">
+        <h2>倒计时详情</h2>
+        <label
+          >标题
+          <input id="cd-title" type="text" readonly />
+        </label>
+        <label
+          >时间
+          <input id="cd-time" type="text" readonly />
+        </label>
+        <label
+          >谁的日程
+          <input id="cd-owner" type="text" readonly placeholder="未分配" />
+        </label>
+        <label
+          >备注
+          <textarea id="cd-note" rows="3" readonly></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="cd-del">删除</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn primary" id="cd-done">完成</button>
+        </div>
+      </div>
+    </div>
     <div class="toast" id="toast" hidden></div>
 
     <div class="modal-backdrop" id="ai-modal" hidden>

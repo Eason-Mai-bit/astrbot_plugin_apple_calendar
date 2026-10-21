@@ -4,8 +4,21 @@ __pycache__/
 *.pyc
 events.json
 state.json
+diary.json
 panel_bg.img
 panel_bg.img.tmp
+
+# 防止私人数据外泄：任何 json 数据文件的备份/临时/变体一律忽略
+*.json.bak
+*.json.tmp
+*.json.old
+*_backup.json
+*backup.json
+events*.json
+state*.json
+diary*.json
+reminders*.json
+*_diary*.json
 
 # editor / os noise
 .vscode/

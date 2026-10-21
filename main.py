@@ -78,6 +78,19 @@ def _weekday_cn(idx: int) -> str:
     return "一二三四五六日"[idx % 7]
 
 
+_DIARY_TAG_TAIL = "，。！？、；：,.!?;:\"'）)】]》…"
+
+
+def extract_tags(text: str) -> list[str]:
+    """从标题/正文中提取 #标签（支持中文）；#前须为空白或行首，剔除结尾标点。"""
+    out: list[str] = []
+    for m in re.finditer(r"(?:^|\s)#([^\s#]{1,30})", text or ""):
+        tag = m.group(1).strip(_DIARY_TAG_TAIL)
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
 MAX_BG_BYTES = 8 * 1024 * 1024
 BG_FILE_NAME = "panel_bg.img"
 BG_MIME = {
@@ -258,6 +271,87 @@ if _HAS_TOOLS:
             return self.plugin.tool_list_events(**kwargs)
 
     @pyd_dataclass
+    class ListCountdownTool(FunctionTool[AstrAgentContext]):
+        """Read-only countdown list for upcoming todos."""
+
+        name: str = "list_countdown"
+        description: str = (
+            "查询最近待办的倒计时：未来最近的未完成日程及距开始还有多久"
+            "（全天日程按全天提醒时刻计，单位取插件设置的周/天/小时）。"
+            "仅查询，无需用户确认。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "条数，缺省 8，最大 20",
+                    },
+                },
+                "required": [],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_list_countdown(**kwargs)
+
+    @pyd_dataclass
+    class AddDiaryTool(FunctionTool[AstrAgentContext]):
+        """Write one daily diary entry (plain text)."""
+
+        name: str = "add_diary"
+        description: str = (
+            "写入一篇每日日记（纯文本：标题+正文）。在标题或正文里写 #标签 "
+            "会自动成为标签；同一天可写多条。直接写入，无需用户确认。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "日记标题（必填，≤200字）"},
+                    "content": {"type": "string", "description": "日记正文（纯文本，可多行；用 #xxx 标注标签）"},
+                    "date": {
+                        "type": "string",
+                        "description": "归属日期 YYYY-MM-DD；缺省为今天",
+                    },
+                },
+                "required": ["title"],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_add_diary(**kwargs)
+
+    @pyd_dataclass
+    class ListDiaryTool(FunctionTool[AstrAgentContext]):
+        """Search diary entries by keyword or tag."""
+
+        name: str = "list_diary"
+        description: str = (
+            "检索日记：按关键词（匹配标题与正文）或 #标签 查询，"
+            "返回每条的 id、日期、标题、标签与正文摘要。仅查询，无需确认。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "关键词，匹配标题或正文；缺省不过滤"},
+                    "tag": {"type": "string", "description": "按标签过滤（不含 # 号）"},
+                    "date": {"type": "string", "description": "只看某天 YYYY-MM-DD；缺省全部"},
+                    "limit": {"type": "integer", "description": "条数，缺省 10，最大 30"},
+                },
+                "required": [],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_list_diary(**kwargs)
+
+    @pyd_dataclass
     class UpdateEventTool(FunctionTool[AstrAgentContext]):
         """Update an existing event after user confirmation."""
 
@@ -335,6 +429,7 @@ class CalendarPlugin(Star):
         self.config = config
         self._lock = threading.RLock()
         self._events: list[dict] = []
+        self._diary: list[dict] = []
         self._state: dict = {
             "display_mode": "panel",
             "theme": "light",
@@ -371,6 +466,7 @@ class CalendarPlugin(Star):
         "holiday_override_path",
         "demo_on_start",
         "webui_base_url",
+        "countdown_unit",
     )
 
     def _apply_config(self) -> None:
@@ -406,6 +502,12 @@ class CalendarPlugin(Star):
         self._holiday_override_path = str(raw.get("holiday_override_path") or "")
         self._demo_on_start = as_bool("demo_on_start", True)
         self._webui_base = str(raw.get("webui_base_url") or "http://127.0.0.1:6185").rstrip("/")
+        unit_raw = str(raw.get("countdown_unit") or "天").strip()
+        self._countdown_unit = {
+            "周": "week", "天": "day", "小时": "hour",
+            "week": "week", "day": "day", "hour": "hour",
+            "0": "week", "1": "day", "2": "hour",
+        }.get(unit_raw, "day")
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -413,6 +515,7 @@ class CalendarPlugin(Star):
         lunar.set_logger(logger.warning)
         self._data_dir = self._resolve_data_dir()
         self._load_events()
+        self._load_diary()
         self._load_state()
         self._holiday_override = lunar.load_holiday_override(self._holiday_override_path)
         self._register_apis()
@@ -457,6 +560,7 @@ class CalendarPlugin(Star):
         with self._lock:
             self._save_events()
             self._save_state()
+            self._save_diary()
 
     def _resolve_data_dir(self) -> Path:
         try:
@@ -481,6 +585,28 @@ class CalendarPlugin(Star):
     @property
     def _state_path(self) -> Path:
         return self._data_dir / "state.json"
+
+    @property
+    def _diary_path(self) -> Path:
+        return self._data_dir / "diary.json"
+
+    def _load_diary(self) -> None:
+        data = rec.load_json_file(str(self._diary_path), {"version": 1, "entries": []})
+        entries = data.get("entries") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            entries = []
+        self._diary = [
+            e for e in entries if isinstance(e, dict) and e.get("id")
+        ]
+
+    def _save_diary(self) -> None:
+        try:
+            rec.atomic_write_json(
+                str(self._diary_path),
+                {"version": 1, "entries": self._diary},
+            )
+        except OSError as exc:
+            logger.error("[calendar] saving diary failed: %s", exc)
 
     def _load_events(self) -> None:
         data = rec.load_json_file(str(self._events_path), {"version": 1, "events": []})
@@ -809,6 +935,12 @@ class CalendarPlugin(Star):
     # ── digest / reminders ───────────────────────────────────────────────
 
     def build_digest(self) -> dict:
+        """Today's digest: only occurrences covering today that have not ended.
+
+        The expansion window is wider than one day so multi-day / repeating
+        events overlapping today are found; everything else (finished items,
+        future days, expanded repeats) is filtered out afterwards.
+        """
         now = dt.datetime.now()
         today = now.date()
         lo, hi = today - dt.timedelta(days=1), today + dt.timedelta(days=7)
@@ -820,6 +952,8 @@ class CalendarPlugin(Star):
                 oe = occurrence_end(ev, os_)
                 if oe < now:
                     continue
+                if os_.date() > today or oe.date() < today:
+                    continue  # keep only occurrences that cover today
                 occs.append((os_, oe, ev))
         occs.sort(key=lambda t: (t[0].date() != today, t[0]))
         lines = []
@@ -839,6 +973,81 @@ class CalendarPlugin(Star):
             "lunar": lunar.lunar_md(today),
             "lines": lines,
             "total": len(occs),
+        }
+
+    def _all_day_remind_clock(self) -> dt.time:
+        """全天日程的倒计时锚点时刻（设置里的全天提醒时间，非法则 09:00）。"""
+        try:
+            hh, mm = str(self._all_day_remind or "09:00").split(":")[:2]
+            return dt.time(max(0, min(23, int(hh))), max(0, min(59, int(mm))))
+        except (TypeError, ValueError):
+            return dt.time(9, 0)
+
+    def build_countdown(self, limit: int | None = None) -> dict:
+        """未来待办倒计时（只读）。
+
+        规则（已与用户确认）：
+        - 只取尚未结束的 occurrence；done=True 的事件跳过。
+        - 计时锚点 = 事件开始时间；全天事件用全天提醒时刻。
+        - 锚点已过 → remaining=0、status="ongoing"，仍排最前。
+        - 重复日程通过 occurrence_starts 展开取下一次出现。
+        - items 按 (remaining, start) 升序；截断到 200 条返回。
+        """
+        now = dt.datetime.now()
+        today = now.date()
+        horizon = today + dt.timedelta(days=400)
+        clock = self._all_day_remind_clock()
+        with self._lock:
+            src = list(self._events)
+        items: list[dict] = []
+        for ev in src:
+            if ev.get("done"):
+                continue
+            try:
+                starts = occurrence_starts(ev, today, horizon)
+            except Exception as exc:
+                logger.warning(
+                    "[calendar] countdown expand %s failed: %s", ev.get("id"), exc
+                )
+                continue
+            for os_ in starts:
+                oe = occurrence_end(ev, os_)
+                if oe < now:
+                    continue
+                anchor = (
+                    dt.datetime.combine(os_.date(), clock)
+                    if ev.get("all_day")
+                    else os_
+                )
+                remaining = max(0, int((anchor - now).total_seconds()))
+                items.append(
+                    {
+                        "key": occ_key(ev["id"], os_),
+                        "id": ev["id"],
+                        "title": ev.get("title", ""),
+                        "start": dt_str(os_),
+                        "end": dt_str(oe),
+                        "target": dt_str(anchor),
+                        "remaining": remaining,
+                        "status": "ongoing" if remaining == 0 else "upcoming",
+                        "all_day": bool(ev.get("all_day")),
+                        "color": ev.get("color", "blue"),
+                        "owner": ev.get("owner", ""),
+                        "note": ev.get("note", ""),
+                        "repeat": ev.get("repeat", "none"),
+                        "repeat_until": ev.get("repeat_until"),
+                    }
+                )
+        items.sort(key=lambda x: (x["remaining"], x["start"]))
+        total = len(items)
+        items = items[:200]
+        if limit is not None:
+            items = items[: max(0, int(limit))]
+        return {
+            "unit": self._countdown_unit,
+            "now": dt_str(now),
+            "total": total,
+            "items": items,
         }
 
     def _pending_cards(self) -> list[dict]:
@@ -1255,6 +1464,31 @@ class CalendarPlugin(Star):
                 # A completed whole event keeps its struck-through style too.
                 self._save_state()
                 return {"ok": True}
+            if op == "card_done":
+                # 完成提醒卡片背后的任务：勾选事件完成，并关掉卡片。
+                key = str(payload.get("key") or "")
+                event_id = key.split("|", 1)[0]
+                ev = self._find_event(event_id)
+                if ev is None:
+                    return {"error": f"未找到日程 {event_id}"}
+                try:
+                    self.update_event(event_id, {"done": True})
+                except (KeyError, ValueError, TypeError) as exc:
+                    return {"error": str(exc)}
+                with self._lock:
+                    st = self._state["reminders"].get(key)
+                    if st is None:
+                        st = {
+                            "fired_at": dt_str(dt.datetime.now()),
+                            "completed": False,
+                            "snooze_until": None,
+                        }
+                        self._state["reminders"][key] = st
+                    st["completed"] = True
+                    st["snooze_until"] = None
+                    self._state.get("dismissed", {}).pop(key, None)
+                    self._save_state()
+                return {"ok": True, "done": True}
             if op == "snooze":
                 key = str(payload.get("key") or "")
                 st = self._state["reminders"].get(key)
@@ -1321,6 +1555,131 @@ class CalendarPlugin(Star):
                 return {"ok": True}
         return {"error": f"unknown op {op!r}"}
 
+    # ── diary (每日日记) ───────────────────────────────────────────────────
+
+    def _validate_diary(self, data: dict, partial: bool = False) -> dict:
+        """校验日记字段；tags 由 title+content 的 #语法派生，不接受外部传入。"""
+        out: dict[str, Any] = {}
+        if not partial or "title" in data:
+            title = str(data.get("title") or "").strip()
+            if len(title) > 200:
+                raise ValueError("日记标题最长 200 字")
+            out["title"] = title
+        if not partial or "content" in data:
+            content = str(data.get("content") or "")
+            if len(content) > 20000:
+                raise ValueError("日记正文最长 20000 字")
+            out["content"] = content
+        if not partial or "date" in data:
+            raw = str(data.get("date") or "").strip()
+            if raw:
+                out["date"] = str(parse_date(raw))  # ValueError 可读
+            elif not partial:
+                out["date"] = str(dt.date.today())
+        if not partial or "pinned" in data:
+            out["pinned"] = bool(data.get("pinned"))
+        return out
+
+    def create_diary(self, payload: dict) -> dict:
+        with self._lock:
+            fields = self._validate_diary(payload, partial=False)
+            now = dt_str(dt.datetime.now())
+            entry = {
+                "id": uuid.uuid4().hex,
+                "date": fields.get("date") or str(dt.date.today()),
+                "title": fields.get("title", ""),
+                "content": fields.get("content", ""),
+                "tags": extract_tags(
+                    fields.get("title", "") + "\n" + fields.get("content", "")
+                ),
+                "pinned": fields.get("pinned", False),
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._diary.append(entry)
+            self._save_diary()
+            return entry
+
+    def update_diary(self, entry_id: str, payload: dict) -> dict:
+        with self._lock:
+            ent = next((e for e in self._diary if e.get("id") == entry_id), None)
+            if ent is None:
+                raise KeyError(f"未找到日记 {entry_id}")
+            fields = self._validate_diary(payload, partial=True)
+            for key in ("title", "content", "date", "pinned"):
+                if key in fields:
+                    ent[key] = fields[key]
+            if "title" in fields or "content" in fields:
+                ent["tags"] = extract_tags(
+                    str(ent.get("title", "")) + "\n" + str(ent.get("content", ""))
+                )
+            ent["updated_at"] = dt_str(dt.datetime.now())
+            self._save_diary()
+            return ent
+
+    def delete_diary(self, entry_id: str) -> None:
+        with self._lock:
+            before = len(self._diary)
+            self._diary = [e for e in self._diary if e.get("id") != entry_id]
+            if len(self._diary) == before:
+                raise KeyError(f"未找到日记 {entry_id}")
+            self._save_diary()
+
+    @staticmethod
+    def _diary_date_num(value: str) -> int:
+        try:
+            return int(str(value or "").replace("-", "") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def list_diary(
+        self,
+        q: str = "",
+        tag: str = "",
+        date: str = "",
+        limit: int = 0,
+    ) -> list[dict]:
+        """检索日记：关键词(标题+正文) / 逗号分隔多标签(AND) / 指定日期。"""
+        ql = str(q or "").strip().lower()
+        wanted = [t.strip() for t in str(tag or "").split(",") if t.strip()]
+        with self._lock:
+            entries = list(self._diary)
+        out = []
+        for ent in entries:
+            if date and ent.get("date") != date:
+                continue
+            if wanted and not all(t in (ent.get("tags") or []) for t in wanted):
+                continue
+            if ql:
+                hay = (
+                    str(ent.get("title", "")) + "\n" + str(ent.get("content", ""))
+                ).lower()
+                if ql not in hay:
+                    continue
+            out.append(ent)
+        # 新的在前、置顶最前：稳定排序两趟
+        out.sort(key=lambda e: str(e.get("updated_at", "")), reverse=True)
+        out.sort(
+            key=lambda e: (
+                0 if e.get("pinned") else 1,
+                -self._diary_date_num(e.get("date")),
+            )
+        )
+        if limit and limit > 0:
+            out = out[:limit]
+        return out
+
+    def diary_tags(self) -> list[dict]:
+        counts: dict[str, int] = {}
+        with self._lock:
+            for ent in self._diary:
+                for t in ent.get("tags") or []:
+                    counts[str(t)] = counts.get(str(t), 0) + 1
+        return sorted(
+            ({"tag": k, "count": v} for k, v in counts.items()),
+            key=lambda x: (-x["count"], x["tag"]),
+        )
+
     # ── panel Web API ────────────────────────────────────────────────────
 
     def _register_apis(self) -> None:
@@ -1331,6 +1690,12 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/events/update", self._api_event_update, ["POST"], "Update event")
         reg(f"/{PLUGIN_NAME}/events/delete", self._api_event_delete, ["POST"], "Delete event")
         reg(f"/{PLUGIN_NAME}/digest", self._api_digest, ["GET"], "Today digest")
+        reg(f"/{PLUGIN_NAME}/countdown", self._api_countdown, ["GET"], "Upcoming countdowns")
+        reg(f"/{PLUGIN_NAME}/diary", self._api_diary_list, ["GET"], "Search diary entries")
+        reg(f"/{PLUGIN_NAME}/diary", self._api_diary_create, ["POST"], "Create diary entry")
+        reg(f"/{PLUGIN_NAME}/diary/update", self._api_diary_update, ["POST"], "Update diary entry")
+        reg(f"/{PLUGIN_NAME}/diary/delete", self._api_diary_delete, ["POST"], "Delete diary entry")
+        reg(f"/{PLUGIN_NAME}/diary/tags", self._api_diary_tags, ["GET"], "Diary tag counts")
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminders, ["GET"], "Pending reminder cards")
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminder_action, ["POST"], "done/snooze card")
         reg(f"/{PLUGIN_NAME}/display", self._api_display, ["GET"], "Display mode status")
@@ -1402,6 +1767,69 @@ class CalendarPlugin(Star):
     async def _api_digest(self):
         return json_response(self.build_digest())
 
+    async def _api_countdown(self):
+        return json_response(self.build_countdown())
+
+    async def _api_diary_list(self):
+        q = request.query.get("q", "") or ""
+        tag = request.query.get("tag", "") or ""
+        date = request.query.get("date", "") or ""
+        try:
+            limit = int(request.query.get("limit") or 0)
+        except ValueError:
+            limit = 0
+        return json_response(
+            {
+                "entries": self.list_diary(
+                    q=q, tag=tag, date=date, limit=limit
+                )
+            }
+        )
+
+    async def _api_diary_create(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        try:
+            entry = self.create_diary(body)
+        except (ValueError, TypeError) as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "entry": entry})
+
+    async def _api_diary_update(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        entry_id = str(body.pop("id", "") or "")
+        if not entry_id:
+            return error_response("缺少 id")
+        try:
+            entry = self.update_diary(entry_id, body)
+        except KeyError as exc:
+            return error_response(str(exc), status_code=404)
+        except (ValueError, TypeError) as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "entry": entry})
+
+    async def _api_diary_delete(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        entry_id = str(body.get("id", "") or "")
+        if not entry_id:
+            return error_response("缺少 id")
+        try:
+            self.delete_diary(entry_id)
+        except KeyError as exc:
+            return error_response(str(exc), status_code=404)
+        return json_response({"ok": True})
+
+    async def _api_diary_tags(self):
+        return json_response({"tags": self.diary_tags()})
+
     async def _api_reminders(self):
         return json_response({"cards": self._pending_cards()})
 
@@ -1443,6 +1871,7 @@ class CalendarPlugin(Star):
             {
                 "day_start_hour": self._day_start_hour,
                 "remind_default_minutes": self._remind_default,
+                "countdown_unit": self._countdown_unit,
                 "colors": list(COLOR_CHOICES),
                 "repeats": list(REPEAT_CHOICES),
                 "display_mode": mode,
@@ -1629,6 +2058,9 @@ class CalendarPlugin(Star):
         self._tools = [
             CreateEventTool(plugin=self),
             ListEventsTool(plugin=self),
+            ListCountdownTool(plugin=self),
+            AddDiaryTool(plugin=self),
+            ListDiaryTool(plugin=self),
             UpdateEventTool(plugin=self),
             DeleteEventTool(plugin=self),
         ]
@@ -1640,7 +2072,7 @@ class CalendarPlugin(Star):
     # Tools that resolve relative time ("明天"/"下周三") or list by date need the
     # current clock; mutation-by-id tools do not, so we skip the suffix there to
     # avoid signalling calendar relevance on every turn.
-    _TIME_SENSITIVE_TOOLS = frozenset({"create_event", "list_events"})
+    _TIME_SENSITIVE_TOOLS = frozenset({"create_event", "list_events", "list_countdown", "add_diary"})
 
     def _refresh_tool_time(self) -> None:
         if not self._tools:
@@ -1740,6 +2172,79 @@ class CalendarPlugin(Star):
         if not rows:
             return f"{dfrom:%Y-%m-%d} ~ {dto:%Y-%m-%d} 没有匹配的日程。"
         return f"{dfrom:%Y-%m-%d} ~ {dto:%Y-%m-%d} 共 {len(rows)} 条：\n" + "\n".join(rows)
+
+    def tool_list_countdown(self, **kwargs) -> str:
+        try:
+            limit = int(kwargs.get("limit") or 8)
+        except (TypeError, ValueError):
+            limit = 8
+        limit = max(1, min(20, limit))
+        data = self.build_countdown(limit=limit)
+
+        def fmt(sec: int) -> str:
+            if sec <= 0:
+                return "进行中"
+            unit = data["unit"]
+            if unit == "week":
+                return f"{sec // 604800}周"
+            if unit == "hour":
+                return f"{sec // 3600}小时"
+            return f"{sec // 86400}天"
+
+        rows = []
+        for it in data["items"]:
+            when = str(it["target"])[:16].replace("T", " ")
+            owner = f" @{it['owner']}" if it.get("owner") else ""
+            rows.append(
+                f"[{it['id']}] {when} · {fmt(it['remaining'])} · {it['title']}{owner}"
+            )
+        if not rows:
+            return "未来没有待办。"
+        return f"最近 {len(rows)} 条待办：\n" + "\n".join(rows)
+
+    def tool_add_diary(self, **kwargs) -> str:
+        title = str(kwargs.get("title") or "").strip()
+        if not title:
+            return "写入失败：日记标题不能为空。"
+        payload = {
+            "title": title,
+            "content": str(kwargs.get("content") or ""),
+        }
+        date = kwargs.get("date")
+        if date:
+            payload["date"] = str(date)
+        try:
+            entry = self.create_diary(payload)
+        except (ValueError, TypeError) as exc:
+            return f"写入失败：{exc}"
+        tags = "、".join(f"#{t}" for t in entry.get("tags") or []) or "无标签"
+        return f"已写入日记《{entry['title']}》（{entry['date']}，{tags}）。"
+
+    def tool_list_diary(self, **kwargs) -> str:
+        try:
+            limit = int(kwargs.get("limit") or 10)
+        except (TypeError, ValueError):
+            limit = 10
+        limit = max(1, min(30, limit))
+        entries = self.list_diary(
+            q=str(kwargs.get("query") or ""),
+            tag=str(kwargs.get("tag") or ""),
+            date=str(kwargs.get("date") or ""),
+            limit=limit,
+        )
+        if not entries:
+            return "没有匹配的日记。"
+        rows = []
+        for ent in entries:
+            tags = " ".join(f"#{t}" for t in ent.get("tags") or [])
+            snippet = str(ent.get("content", "")).replace("\n", " ")
+            if len(snippet) > 60:
+                snippet = snippet[:60] + "…"
+            rows.append(
+                f"[{ent['id']}] {ent.get('date', '')} 《{ent.get('title', '')}》"
+                f" {tags} — {snippet}"
+            )
+        return f"共 {len(rows)} 篇：\n" + "\n".join(rows)
 
     def tool_update_event(self, **kwargs) -> str:
         event_id = str(kwargs.pop("id", "") or "")

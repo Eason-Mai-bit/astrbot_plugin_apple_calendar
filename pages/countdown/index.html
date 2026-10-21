@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>倒计时</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <div class="bg-layer" id="bg-layer" hidden></div>
+
+      <header class="topbar">
+        <button id="btn-back" class="pill">‹ 返回日历</button>
+        <div class="spacer"></div>
+        <span class="unit-badge" id="unit-badge" hidden>按天</span>
+      </header>
+
+      <div class="title-row">
+        <h1 class="big-title">倒计时</h1>
+        <p class="sub-hint">距离下一个待办还有多久</p>
+      </div>
+
+      <main class="grid" id="grid"></main>
+
+      <footer class="bottombar">
+        <button class="pill" id="btn-prev">‹ 上一页</button>
+        <span class="page-ind" id="page-ind">1 / 1</span>
+        <button class="pill" id="btn-next">下一页 ›</button>
+        <div class="spacer"></div>
+        <span class="refresh-hint" id="refresh-hint"></span>
+      </footer>
+
+      <div class="modal-backdrop" id="modal" hidden>
+        <div class="modal">
+          <h2>日程详情</h2>
+          <label
+            >标题
+            <input id="d-title" type="text" readonly />
+          </label>
+          <label
+            >时间
+            <input id="d-time" type="text" readonly />
+          </label>
+          <label
+            >谁的日程
+            <input id="d-owner" type="text" readonly placeholder="未分配" />
+          </label>
+          <label
+            >备注
+            <textarea id="d-note" rows="3" readonly></textarea>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="btn ghost" id="d-del">删除</button>
+            <div class="spacer"></div>
+            <button type="button" class="btn primary" id="d-done">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast" hidden></div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
