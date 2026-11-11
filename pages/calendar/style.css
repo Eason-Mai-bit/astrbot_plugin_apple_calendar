@@ -1643,3 +1643,1053 @@ textarea:focus {
   background: var(--dy-bg);
   box-shadow: 0 0 0 1px var(--dy);
 }
+
+/* ── goals board（白板 + 便利贴） ── */
+.goals-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+.gb-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.gb-cycle-wrap {
+  position: relative;
+}
+.gb-cycle-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 250px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 40;
+  animation: popUp 0.16s ease-out;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.gb-cycle-pop .it {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+.gb-cycle-pop .it:hover {
+  background: var(--surface-2);
+}
+.gb-cycle-pop .it.on {
+  color: var(--accent);
+  font-weight: 600;
+}
+.gb-cycle-pop .it .meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.gb-cycle-pop .it .pen {
+  flex: none;
+  color: var(--text-3);
+  display: flex;
+  cursor: pointer;
+}
+.gb-cycle-pop .it .pen:hover {
+  color: var(--accent);
+}
+.gb-two {
+  display: flex;
+  gap: 8px;
+}
+.gb-two label {
+  flex: 1;
+  min-width: 0;
+}
+.gb-seg {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.gb-seg .seg {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 9px;
+  padding: 7px 0;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.gb-seg .seg:hover {
+  background: var(--surface);
+}
+.gb-seg .seg.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.gb-time {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.gb-time input {
+  flex: 1;
+  min-width: 0;
+}
+.gb-time .tilde {
+  color: var(--text-3);
+  font-size: 12px;
+  flex: none;
+}
+
+/* ── 便签时间角标 ── */
+.stamp-time {
+  align-self: flex-start;
+  background: var(--work-bg);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.stamp.small .stamp-time {
+  flex: none;
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  font-weight: 600;
+}
+.board {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  position: relative;
+}
+.board-canvas {
+  position: relative;
+  width: 1600px;
+  min-width: 100%;
+  height: 1100px;
+  min-height: 100%;
+  background-image: radial-gradient(var(--border) 1.2px, transparent 1.2px);
+  background-size: 20px 20px;
+}
+.gb-empty {
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+  width: 100%;
+  padding: 60px 10px;
+}
+/* ── 便签 = 邮票形状（四边半圆齿孔遮罩） ── */
+.note-wrap {
+  position: absolute;
+  filter: drop-shadow(0 6px 16px rgba(15, 23, 42, 0.14));
+  cursor: grab;
+  user-select: none;
+}
+.note-wrap:active {
+  cursor: grabbing;
+}
+.note-wrap.gb-dragging {
+  opacity: 0.65;
+  z-index: 30;
+}
+.stamp {
+  --sc: 6px;
+  --gap: 19px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  -webkit-mask:
+    radial-gradient(circle var(--sc) at 50% 0, #0000 98%, #000) 50% 0 / var(--gap) 100% repeat-x,
+    radial-gradient(circle var(--sc) at 50% 100%, #0000 98%, #000) 50% 100% / var(--gap) 100% repeat-x,
+    radial-gradient(circle var(--sc) at 0 50%, #0000 98%, #000) 0 50% / 100% var(--gap) repeat-y,
+    radial-gradient(circle var(--sc) at 100% 50%, #0000 98%, #000) 100% 50% / 100% var(--gap) repeat-y;
+  -webkit-mask-composite: source-in;
+  mask:
+    radial-gradient(circle var(--sc) at 50% 0, #0000 98%, #000) 50% 0 / var(--gap) 100% repeat-x,
+    radial-gradient(circle var(--sc) at 50% 100%, #0000 98%, #000) 50% 100% / var(--gap) 100% repeat-x,
+    radial-gradient(circle var(--sc) at 0 50%, #0000 98%, #000) 0 50% / 100% var(--gap) repeat-y,
+    radial-gradient(circle var(--sc) at 100% 50%, #0000 98%, #000) 100% 50% / 100% var(--gap) repeat-y;
+  mask-composite: intersect;
+}
+.stamp.big {
+  width: 272px;
+  background: var(--surface);
+  padding: 13px 14px 15px;
+}
+.stamp.small {
+  width: 232px;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 13px;
+  color: #fff;
+  font-size: 12.5px;
+  --sc: 5px;
+  --gap: 15px;
+}
+.stamp.small.blue {
+  background: var(--c-blue);
+}
+.stamp.small.teal {
+  background: var(--c-teal);
+}
+.stamp.small.indigo {
+  background: var(--c-indigo);
+}
+.stamp.small.slate {
+  background: var(--c-slate);
+}
+.stamp.small .n {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.stamp.small.done .n {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+.stamp.small .gc-check {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.75);
+}
+.stamp.small .gc-check.on {
+  background: #fff;
+  border-color: #fff;
+}
+.stamp.small.blue .gc-check.on {
+  color: var(--c-blue);
+}
+.stamp.small.teal .gc-check.on {
+  color: var(--c-teal);
+}
+.stamp.small.indigo .gc-check.on {
+  color: var(--c-indigo);
+}
+.stamp.small.slate .gc-check.on {
+  color: var(--c-slate);
+}
+.stamp.small .gb-icon-btn {
+  color: rgba(255, 255, 255, 0.85);
+}
+.stamp.small .gb-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.gc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gb-grip {
+  flex: none;
+  color: var(--text-3);
+  display: flex;
+  cursor: grab;
+  touch-action: none;
+}
+.gb-grip:active {
+  cursor: grabbing;
+}
+.gc-check {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.6px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.gc-check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.gc-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.gc-title.done {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+.gc-acts {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+.gb-icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.gb-icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.gb-icon-btn.danger:hover {
+  color: var(--danger);
+}
+.gb-icon-btn.armed {
+  background: var(--danger);
+  color: #fff;
+}
+.gc-prog {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.gc-prog i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.gc-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.gc-kids {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 6px;
+}
+.sticky {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12.5px;
+  cursor: grab;
+  touch-action: none;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  user-select: none;
+}
+.sticky.blue {
+  background: var(--c-blue);
+}
+.sticky.teal {
+  background: var(--c-teal);
+}
+.sticky.indigo {
+  background: var(--c-indigo);
+}
+.sticky.slate {
+  background: var(--c-slate);
+}
+.sticky .n {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sticky.done .n {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+.sticky .gb-check {
+  border-color: rgba(255, 255, 255, 0.75);
+  background: transparent;
+}
+.sticky .gb-check.on {
+  background: #fff;
+  border-color: #fff;
+  color: var(--c-blue);
+}
+.sticky.teal .gb-check.on {
+  color: var(--c-teal);
+}
+.sticky.indigo .gb-check.on {
+  color: var(--c-indigo);
+}
+.sticky.slate .gb-check.on {
+  color: var(--c-slate);
+}
+.sticky .gb-icon-btn {
+  color: rgba(255, 255, 255, 0.85);
+}
+.sticky .gb-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.gc-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 4px 4px;
+  border-radius: 8px;
+  background: none;
+  border: none;
+}
+.gc-add:hover {
+  color: var(--accent);
+  background: var(--surface-2);
+}
+.gb-dragging {
+  opacity: 0.5;
+  transform: scale(1.02) rotate(-0.8deg);
+  box-shadow: var(--shadow);
+}
+.gb-drop-before {
+  box-shadow: -4px 0 0 0 var(--accent);
+}
+.gb-drop-after {
+  box-shadow: 4px 0 0 0 var(--accent);
+}
+.gc-kids.gb-drop-before,
+.gc-kids.gb-drop-after {
+  box-shadow: none;
+}
+.gb-drop-top {
+  border-top: 3px solid var(--accent);
+}
+.gb-drop-bottom {
+  border-bottom: 3px solid var(--accent);
+}
+
+/* ── 无周期 · 搜索/时间高亮/快选 ── */
+.gb-toolbar .dy-search {
+  flex: 0 1 260px;
+}
+.gb-timefilter {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  position: relative;
+}
+#gb-tf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#gb-tf-btn .ico {
+  width: 16px;
+  height: 16px;
+}
+.gb-timefilter input {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  outline: none;
+  width: 172px;
+}
+.gb-timefilter input:focus {
+  border-color: var(--accent);
+}
+.gb-timefilter .tilde {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.gb-time {
+  position: relative;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.gb-pick {
+  flex: none;
+  width: 30px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 0;
+}
+.gb-pick:hover {
+  color: var(--accent);
+  background: var(--surface);
+}
+.gb-pick .ico {
+  width: 16px;
+  height: 16px;
+}
+.gb-pick-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 270px;
+  max-height: 250px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 50;
+  animation: popUp 0.16s ease-out;
+}
+.gb-pick-pop .it {
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--text);
+}
+.gb-pick-pop .it:hover {
+  background: var(--surface-2);
+}
+
+/* ── 大便签：所选颜色为主色 ── */
+.stamp.big {
+  color: #fff;
+}
+.stamp.big.blue {
+  background: var(--c-blue);
+}
+.stamp.big.teal {
+  background: var(--c-teal);
+}
+.stamp.big.indigo {
+  background: var(--c-indigo);
+}
+.stamp.big.slate {
+  background: var(--c-slate);
+}
+.stamp.big .stamp-time {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+.stamp.big .gc-title {
+  color: #fff;
+}
+.stamp.big .gc-title.done {
+  color: rgba(255, 255, 255, 0.72);
+}
+.stamp.big .gc-check {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.8);
+}
+.stamp.big .gc-check.on {
+  background: #fff;
+  border-color: #fff;
+}
+.stamp.big.blue .gc-check.on {
+  color: var(--c-blue);
+}
+.stamp.big.teal .gc-check.on {
+  color: var(--c-teal);
+}
+.stamp.big.indigo .gc-check.on {
+  color: var(--c-indigo);
+}
+.stamp.big.slate .gc-check.on {
+  color: var(--c-slate);
+}
+.stamp.big .gc-prog {
+  background: rgba(255, 255, 255, 0.28);
+}
+.stamp.big .gc-prog i {
+  background: #fff;
+}
+.stamp.big .gc-meta {
+  color: rgba(255, 255, 255, 0.82);
+}
+.stamp.big .gb-icon-btn {
+  color: rgba(255, 255, 255, 0.85);
+}
+.stamp.big .gb-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+.stamp.big .gb-icon-btn.danger:hover {
+  color: #ffd9d9;
+}
+.stamp.big .gc-add {
+  color: rgba(255, 255, 255, 0.82);
+}
+.stamp.big .gc-add:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* ── 大便签内：小便签 = 一行下划线文字 + 完成按钮 ── */
+.gc-children {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 4px;
+}
+.gc-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #fff;
+  font-size: 12.5px;
+  padding: 1px 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.gc-child:active {
+  cursor: grabbing;
+}
+.gc-child .cb {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  background: transparent;
+  color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.gc-child .cb .ico {
+  width: 11px;
+  height: 11px;
+}
+.gc-child.done .cb {
+  background: #fff;
+  border-color: #fff;
+  color: #333;
+}
+.gc-child .txt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.gc-child.done .txt {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+.gc-child .x {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: opacity 0.15s ease;
+}
+.gc-child:hover .x {
+  opacity: 1;
+}
+.gc-child .x .ico {
+  width: 13px;
+  height: 13px;
+}
+.gc-child .x:hover {
+  color: #fff;
+}
+.gc-child .x.armed {
+  background: var(--danger);
+  color: #fff;
+  opacity: 1;
+}
+.gc-child.dragging {
+  opacity: 0.6;
+}
+
+/* ── Ctrl+滚轮缩放 ── */
+.note-wrap {
+  transform: scale(var(--s, 1));
+  transform-origin: top left;
+}
+
+/* ── 拖拽挂靠高亮 / 时间筛选高亮与置灰 ── */
+.note-wrap.inrange::after,
+.note-wrap.drop-hi::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: 14px;
+  pointer-events: none;
+}
+.note-wrap.inrange::after {
+  border: 2.5px solid var(--accent);
+}
+.note-wrap.drop-hi::after {
+  border: 2.5px dashed var(--accent);
+}
+.note-wrap.dim {
+  filter: grayscale(0.9) drop-shadow(0 6px 16px rgba(15, 23, 42, 0.14));
+  opacity: 0.4;
+}
+.gc-child.dim {
+  opacity: 0.4;
+}
+.gc-child.inrange {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+}
+
+/* ── 浅色贴纸：便签自选色的浅色版（浅底 + 同色系深字） ── */
+.stamp.big,
+.stamp.small {
+  color: color-mix(in srgb, var(--nh, var(--c-blue)) 78%, #000);
+}
+.stamp.big.blue,
+.stamp.small.blue {
+  --nh: var(--c-blue);
+  background: color-mix(in srgb, var(--c-blue) 22%, #fff);
+}
+.stamp.big.teal,
+.stamp.small.teal {
+  --nh: var(--c-teal);
+  background: color-mix(in srgb, var(--c-teal) 22%, #fff);
+}
+.stamp.big.indigo,
+.stamp.small.indigo {
+  --nh: var(--c-indigo);
+  background: color-mix(in srgb, var(--c-indigo) 22%, #fff);
+}
+.stamp.big.slate,
+.stamp.small.slate {
+  --nh: var(--c-slate);
+  background: color-mix(in srgb, var(--c-slate) 22%, #fff);
+}
+.stamp.big .stamp-time,
+.stamp.small .stamp-time {
+  background: color-mix(in srgb, var(--nh, var(--c-blue)) 16%, #fff);
+  color: color-mix(in srgb, var(--nh, var(--c-blue)) 70%, #000);
+}
+.stamp.big .gc-title {
+  color: inherit;
+}
+.stamp.big .gc-title.done {
+  color: color-mix(in srgb, var(--nh, var(--c-blue)) 45%, #999);
+}
+.stamp.big .gc-check,
+.stamp.small .gc-check {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--nh, var(--c-blue)) 55%, #fff);
+  color: transparent;
+}
+.stamp.big .gc-check.on,
+.stamp.small .gc-check.on {
+  background: #fff;
+  border-color: #fff;
+}
+.stamp.big .gc-prog {
+  background: color-mix(in srgb, var(--nh, var(--c-blue)) 16%, #fff);
+}
+.stamp.big .gc-prog i {
+  background: var(--nh, var(--c-blue));
+}
+.stamp.big .gc-meta {
+  color: var(--text-2);
+}
+.stamp.big .gb-icon-btn {
+  color: var(--text-2);
+}
+.stamp.big .gb-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}
+.stamp.big .gb-icon-btn.danger:hover {
+  color: var(--danger);
+}
+.stamp.small .gb-icon-btn {
+  color: var(--text-2);
+}
+.stamp.small .gb-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}
+.gc-child {
+  color: inherit;
+}
+.gc-child .cb {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--nh, var(--c-blue)) 55%, #fff);
+}
+.gc-child.done .cb {
+  background: var(--nh, var(--c-blue));
+  border-color: var(--nh, var(--c-blue));
+  color: #fff;
+}
+.gc-child .x {
+  color: var(--text-2);
+}
+.gc-child .x:hover {
+  color: var(--text);
+}
+.gc-child.inrange {
+  background: color-mix(in srgb, var(--nh, var(--c-blue)) 26%, #fff);
+}
+
+/* ── 日历点选起止弹层 ── */
+.gb-cal-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 254px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 8px 10px 10px;
+  z-index: 51;
+  animation: popUp 0.16s ease-out;
+}
+.gb-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.gb-cal-head .m {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.gb-cal-head button {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gb-cal-head button:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.gb-cal-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.gb-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.gb-cal-grid .w {
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  padding: 3px 0;
+}
+.gb-cal-grid .d {
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+}
+.gb-cal-grid .d:hover {
+  background: var(--surface-2);
+}
+.gb-cal-grid .d.today {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.gb-cal-grid .d.rng {
+  background: var(--work-bg);
+  border-radius: 0;
+}
+.gb-cal-grid .d.sel {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 子行时间降为次级显示（标题优先） */
+.gc-child .tm {
+  opacity: 0.72;
+  font-size: 11.5px;
+}
+
+/* ── 周视图（7 列日程） ── */
+.week-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.week-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+.wk-col {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 8px 10px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.wk-col.today {
+  border-color: var(--accent);
+}
+.wk-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+.wk-head .wd {
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+.wk-head .n {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+}
+.wk-col.today .wk-head .n {
+  color: var(--accent);
+}
+.wk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.wk-ev {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 7px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  flex: none;
+}
+.wk-ev:hover {
+  border-color: var(--accent);
+}
+.wk-ev .c {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.wk-ev .t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wk-ev.done .t {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+
+/* ── 行内双击快改 ── */
+.gb-inline {
+  font: inherit;
+  width: 100%;
+  border: none;
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 1px 6px;
+  outline: none;
+  color: var(--text);
+  box-shadow: 0 0 0 1.5px var(--accent);
+}
+
+/* ── 日记：条目日期角标与加载更多 ── */
+.dy-item .t .dt {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.dy-list .dy-more {
+  align-self: center;
+  margin-top: 4px;
+}
