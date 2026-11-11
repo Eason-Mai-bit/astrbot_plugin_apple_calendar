@@ -733,31 +733,44 @@
 
   // ── render dispatcher ──────────────────────────────────────────
   function render() {
-    if (CD.active || DI.active) return; // 标签页期间不重绘日历视图
+    if (CD.active || DI.active || GB.active) return; // 标签页期间不重绘日历视图
     const sy = window.scrollY || document.documentElement.scrollTop || 0;
     const v = S.split ? "month" : S.view;
     $(".views").classList.toggle("split", S.split);
     $("#view-year").hidden = v !== "year";
     $("#view-month").hidden = v !== "month";
+    $("#view-week").hidden = v !== "week";
     $("#view-day").hidden = !(S.split || S.view === "day");
-    const showWk = S.split || S.view === "month";
+    const showWk = S.split || S.view === "month" || S.view === "week";
     $("#weekday-row").style.visibility = showWk ? "visible" : "hidden";
     $("#weekday-row").style.height = showWk ? "" : "0";
 
     const ctx = $("#btn-ctx");
     const yStep = [$("#btn-year-prev"), $("#btn-year-next")];
+    const wStep = [$("#btn-week-prev"), $("#btn-week-next")];
+    yStep.forEach((b) => (b.hidden = true));
+    wStep.forEach((b) => (b.hidden = true));
     if (v === "day") {
       ctx.hidden = false;
-      ctx.textContent = `‹ ${MONTH_CN[S.m - 1]}`;
+      ctx.textContent = `‹ 本周`;
       $("#big-title").hidden = false;
       $("#big-title").textContent = `${S.m}月${S.d}日`;
-      yStep.forEach((b) => (b.hidden = true));
+    } else if (v === "week") {
+      ctx.hidden = false;
+      ctx.textContent = `‹ ${MONTH_CN[S.m - 1]}`;
+      const wStart = startOfWeek(new Date(S.y, S.m - 1, S.d));
+      const wEnd = addDays(wStart, 6);
+      $("#big-title").hidden = false;
+      $("#big-title").textContent =
+        wStart.getMonth() === wEnd.getMonth()
+          ? `${wStart.getMonth() + 1}月${wStart.getDate()}日 – ${wEnd.getDate()}日`
+          : `${wStart.getMonth() + 1}月${wStart.getDate()}日 – ${wEnd.getMonth() + 1}月${wEnd.getDate()}日`;
+      wStep.forEach((b) => (b.hidden = false));
     } else if (v === "month") {
       ctx.hidden = false;
       ctx.textContent = `‹ ${S.y}年`;
       $("#big-title").hidden = false;
       $("#big-title").textContent = MONTH_CN[S.m - 1];
-      yStep.forEach((b) => (b.hidden = true));
     } else {
       ctx.hidden = true;
       $("#big-title").hidden = false;
@@ -766,6 +779,7 @@
     }
 
     if (v === "month") renderMonth();
+    else if (v === "week") renderWeek();
     else if (v === "year") renderYear();
     if (S.split || v === "day") {
       $("#day-side").hidden = !S.split;
@@ -975,7 +989,12 @@
       setDiaryTab(false);
       return;
     }
-    if (S.view === "day") setView("month");
+    if (GB.active) {
+      setGoalsTab(false);
+      return;
+    }
+    if (S.view === "day") setView("week");
+    else if (S.view === "week") setView("month");
     else if (S.view === "month") setView("year");
   });
   $("#btn-split").addEventListener("click", async () => {
@@ -1004,6 +1023,20 @@
     S.y += 1;
     refreshCurrent();
   });
+  $("#btn-week-prev").addEventListener("click", () => {
+    const d = addDays(startOfWeek(new Date(S.y, S.m - 1, S.d)), -7);
+    S.y = d.getFullYear();
+    S.m = d.getMonth() + 1;
+    S.d = d.getDate();
+    refreshCurrent();
+  });
+  $("#btn-week-next").addEventListener("click", () => {
+    const d = addDays(startOfWeek(new Date(S.y, S.m - 1, S.d)), 7);
+    S.y = d.getFullYear();
+    S.m = d.getMonth() + 1;
+    S.d = d.getDate();
+    refreshCurrent();
+  });
   $("#btn-add").addEventListener("click", () => openCreate());
 
   // month / year / day cell clicks
@@ -1027,6 +1060,18 @@
       else setView("day");
     }
   });
+  // 双击月视图某天 → 进入该天所在周的周视图（单击仍=日视图）
+  $("#view-month").addEventListener("dblclick", (e) => {
+    if (S.split) return;
+    if (e.target.closest(".pill-ev")) return;
+    const cell = e.target.closest(".cell");
+    if (!cell) return;
+    const [y, m, d] = cell.dataset.date.split("-").map(Number);
+    S.y = y;
+    S.m = m;
+    S.d = d;
+    setView("week");
+  });
   $("#view-year").addEventListener("click", (e) => {
     const dEl = e.target.closest(".d");
     if (dEl?.dataset.date) {
@@ -1043,6 +1088,80 @@
       setView("month");
     }
   });
+  // ── week view（7 列，周头可点进日视图） ──────────────────────
+  function renderWeek() {
+    const root = $("#week-grid");
+    root.innerHTML = "";
+    const wStart = startOfWeek(new Date(S.y, S.m - 1, S.d));
+    const todayS = dayKey(today());
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(wStart, i);
+      const key = dayKey(d);
+      const col = document.createElement("div");
+      col.className = "wk-col" + (key === todayS ? " today" : "");
+      const head = document.createElement("div");
+      head.className = "wk-head";
+      head.title = "打开这天的日视图";
+      const wd = document.createElement("span");
+      wd.className = "wd";
+      wd.textContent = WEEK_CN[d.getDay()];
+      const num = document.createElement("span");
+      num.className = "n";
+      num.textContent = `${d.getMonth() + 1}/${d.getDate()}`;
+      head.appendChild(wd);
+      head.appendChild(num);
+      head.addEventListener("click", () => {
+        S.y = d.getFullYear();
+        S.m = d.getMonth() + 1;
+        S.d = d.getDate();
+        setView("day");
+      });
+      col.appendChild(head);
+      const list = document.createElement("div");
+      list.className = "wk-list";
+      const items = [...S.range.events, ...S.range.festival]
+        .filter(
+          (it) =>
+            visible(it) &&
+            it.start.slice(0, 10) <= key &&
+            it.end.slice(0, 10) >= key &&
+            (it.all_day || it.start.slice(0, 10) === key),
+        )
+        .sort(
+          (a, b) =>
+            (a.all_day ? 0 : 1) - (b.all_day ? 0 : 1) ||
+            a.start.localeCompare(b.start) ||
+            a.title.localeCompare(b.title),
+        );
+      for (const it of items) {
+        const ev = document.createElement("div");
+        ev.className = "wk-ev" + (it.done ? " done" : "");
+        const dot = document.createElement("span");
+        dot.className = "c";
+        dot.style.background =
+          it.category === "festival"
+            ? "var(--border)"
+            : `var(--c-${it.color || "blue"})`;
+        const tx = document.createElement("span");
+        tx.className = "t";
+        tx.textContent =
+          (it.all_day ? "" : `${String(it.start).slice(11, 16)} `) +
+          (it.title || "");
+        ev.appendChild(dot);
+        ev.appendChild(tx);
+        ev.addEventListener("click", () => {
+          const item = [...S.range.events, ...S.range.festival].find(
+            (x) => x.key === it.key,
+          );
+          if (item) openEdit(item);
+        });
+        list.appendChild(ev);
+      }
+      col.appendChild(list);
+      root.appendChild(col);
+    }
+  }
+
   const onDayClick = (e) => {
     const ws = e.target.closest(".ws-cell");
     if (ws) {
@@ -1793,6 +1912,21 @@
     $("#cd-modal").hidden = true;
     CD.item = null;
   };
+  $("#cd-locate").addEventListener("click", () => {
+    if (!CD.item) return;
+    const day = String(CD.item.start || "").slice(0, 10);
+    const parts = day.split("-");
+    const [Y, M, D] = parts.map(Number);
+    if (parts.length !== 3 || !Y || !M || !D) {
+      return toast("该待办没有有效日期");
+    }
+    cdCloseDetail();
+    setCountdownTab(false); // 回到日历页
+    S.y = Y;
+    S.m = M;
+    S.d = D;
+    setView("day"); // 定位到那天的日视图
+  });
   $("#cd-done").addEventListener("click", async () => {
     if (!CD.item) return;
     try {
@@ -1842,6 +1976,7 @@
   const setCountdownTab = (on) => {
     if (CD.active === on) return;
     if (on && DI.active) setDiaryTab(false); // 标签互斥
+    if (on && GB.active) setGoalsTab(false);
     CD.active = on;
     $("#btn-countdown").classList.toggle("on", on);
     $("#cd-view").hidden = !on;
@@ -1871,6 +2006,7 @@
     selTags: new Set(),
     current: null,
     seq: 0,
+    limit: 40, // 懒加载：首屏 40 条，滚动/点击递增
   };
   let dySearchTimer = null;
 
@@ -1932,10 +2068,11 @@
       String(e.content || "").replace(/\s+/g, " ").slice(0, 60),
     );
     const sel = DI.current && DI.current.id === e.id ? " sel" : "";
+    const md = String(e.date || "").slice(5);
     return `<div class="dy-item${sel}" data-id="${cdEsc(e.id)}">
       <div class="t">${e.pinned ? '<span class="pin">★</span>' : ""}${cdEsc(
         e.title || "(无标题)",
-      )}</div>
+      )}${md ? `<span class="dt">${cdEsc(md)}</span>` : ""}</div>
       <div class="s">${snippet || "(无正文)"}</div>
       ${tags ? `<div class="tg">${tags}</div>` : ""}
     </div>`;
@@ -1951,17 +2088,30 @@
     let html = "";
     const pinned = DI.entries.filter((e) => e.pinned);
     const rest = DI.entries.filter((e) => !e.pinned);
-    if (pinned.length) {
-      html += '<div class="dy-date">置顶</div>' + pinned.map(dyItemHtml).join("");
+    const limitPinned = pinned.slice(0, DI.limit);
+    const limitRest = rest.slice(0, Math.max(0, DI.limit - limitPinned.length));
+    if (limitPinned.length) {
+      html +=
+        '<div class="dy-date">置顶</div>' + limitPinned.map(dyItemHtml).join("");
     }
-    let lastGroup = null;
-    for (const e of rest) {
-      const g = e.date || "";
-      if (g !== lastGroup) {
-        html += `<div class="dy-date">${cdEsc(dyDateLabel(g))}</div>`;
-        lastGroup = g;
+    let lastMonth = null;
+    for (const e of limitRest) {
+      const month = String(e.date || "").slice(0, 7);
+      if (month !== lastMonth) {
+        html += `<div class="dy-date">${
+          month
+            ? `${month.slice(0, 4)} 年 ${Number(month.slice(5))} 月`
+            : "未知日期"
+        }</div>`;
+        lastMonth = month;
       }
       html += dyItemHtml(e);
+    }
+    const shown = limitPinned.length + limitRest.length;
+    if (DI.entries.length > shown) {
+      html += `<button type="button" class="pill dy-more" data-more>显示更多（剩余 ${
+        DI.entries.length - shown
+      } 篇）</button>`;
     }
     root.innerHTML = html;
   };
@@ -2135,6 +2285,7 @@
   const setDiaryTab = (on) => {
     if (DI.active === on) return;
     if (on && CD.active) setCountdownTab(false); // 标签互斥
+    if (on && GB.active) setGoalsTab(false);
     DI.active = on;
     $("#btn-diary").classList.toggle("on", on);
     $("#diary-view").hidden = !on;
@@ -2193,6 +2344,12 @@
     dyLoad();
   });
   $("#dy-list").addEventListener("click", (e) => {
+    const more = e.target.closest("[data-more]");
+    if (more) {
+      DI.limit += 40;
+      dyRenderList();
+      return;
+    }
     const item = e.target.closest(".dy-item");
     if (!item?.dataset.id) return;
     const entry = DI.entries.find((x) => x.id === item.dataset.id);
@@ -2202,12 +2359,1004 @@
     dyRenderList();
     dyRenderPane();
   });
+  $("#dy-list").addEventListener("scroll", (e) => {
+    const el = e.currentTarget;
+    if (
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 80 &&
+      DI.limit < DI.entries.length
+    ) {
+      DI.limit += 40;
+      dyRenderList();
+    }
+  });
   setInterval(() => {
     if (DI.active && DI.mode === "read" && !document.hidden) dyLoad();
   }, 60000);
   document.addEventListener("visibilitychange", () => {
     if (DI.active && DI.mode === "read" && !document.hidden) dyLoad();
   });
+
+  // ── goals tab（白板邮票便签 · 无周期 · 检索/时间高亮/缩放/挂靠） ──
+  const GB_ICONS = {
+    pencil:
+      '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M13.3 3.7l3 3-8.4 8.4-3.8.8.8-3.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<path d="M11.7 5.5l3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    trash:
+      '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M4.6 6.2h10.8M8.4 6.2V4.7h3.2v1.5M6.3 6.2l.7 9.2h6l.7-9.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    check:
+      '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M5.2 10.6l3.3 3.3 6.4-7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    plus:
+      '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true">' +
+      '<path d="M10 4.9v10.2M4.9 10h10.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  };
+  const GB = {
+    active: false,
+    goals: [],
+    tags: [],
+    q: "",
+    selTags: new Set(),
+    tf: { from: "", to: "" },
+    mode: null, // {type:"goal", id?, parent?}
+    selColor: "blue",
+    gType: "big",
+    seq: 0,
+  };
+  let gbDrag = null;
+  let gbSuppressClickUntil = 0;
+  let gbDelTimer = null;
+  const gbScaleTimers = new Map();
+
+  const gbNum = (v, d) =>
+    typeof v === "number" && isFinite(v) ? Math.round(v) : d;
+  const gbScaleOf = (g) =>
+    typeof g?.scale === "number" && isFinite(g.scale) ? g.scale : 1;
+  const gbFmtDT = (s) => {
+    if (!s) return "";
+    const d = new Date(String(s).replace(" ", "T"));
+    if (!Number.isFinite(d.getTime())) return String(s).slice(0, 16);
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const gbTimeText = (g) => {
+    const a = gbFmtDT(g.start);
+    const b = gbFmtDT(g.end);
+    if (!a && !b) return "";
+    if (a && b) {
+      if (a === b) return a;
+      // 同日全天（00:00 → 23:59）只显示日期
+      if (
+        a.slice(0, 5) === b.slice(0, 5) &&
+        a.endsWith("00:00") &&
+        b.endsWith("23:59")
+      ) {
+        return a.slice(0, 5);
+      }
+      return `${a} → ${b}`;
+    }
+    return a || b;
+  };
+  const gbTimeChip = (g) => {
+    const t = gbTimeText(g);
+    return t ? `<div class="stamp-time">${cdEsc(t)}</div>` : "";
+  };
+  const gbGoalById = (id) => GB.goals.find((g) => g.id === id) || null;
+  const gbKidsOf = (id) => GB.goals.filter((g) => g.parent_id === id);
+
+  const gbLoad = async () => {
+    const seq = ++GB.seq;
+    try {
+      const params = {};
+      if (GB.q) params.q = GB.q;
+      if (GB.selTags.size) params.tag = [...GB.selTags].join(",");
+      const data = await apiGet("goals", params);
+      if (seq !== GB.seq) return;
+      GB.goals = data.goals || [];
+      GB.tags = data.tags || [];
+      gbRender();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+
+  // ── render ────────────────────────────────────────────────────
+  const gbChildRow = (k) => `
+    <div class="gc-child${k.done ? " done" : ""}" data-id="${cdEsc(k.id)}">
+      <button class="cb" data-act="check" title="完成">${GB_ICONS.check}</button>
+      <span class="txt" title="双击编辑"><span class="ti">${cdEsc(k.title)}</span>${gbTimeText(k) ? ' <span class="tm">' + cdEsc(gbTimeText(k)) + "</span>" : ""}</span>
+      <button class="x" data-act="edit" title="编辑">${GB_ICONS.pencil}</button>
+      <button class="x" data-act="del" title="删除">${GB_ICONS.trash}</button>
+    </div>`;
+
+  const gbBigNote = (top) => {
+    const kids = gbKidsOf(top.id);
+    const doneN = kids.filter((k) => k.done).length;
+    const pct = kids.length
+      ? Math.round((doneN / kids.length) * 100)
+      : top.done
+        ? 100
+        : 0;
+    const metaRight = kids.length ? `${pct}%` : top.done ? "✓ 已完成" : "进行中";
+    return `<div class="note-wrap big" data-id="${cdEsc(top.id)}" style="--s:${gbScaleOf(top)};left:${gbNum(top.x, 24)}px;top:${gbNum(top.y, 24)}px">
+      <article class="stamp big ${cdEsc(top.color || "blue")}">
+        ${gbTimeChip(top)}
+        <div class="gc-head">
+          <button class="gc-check${top.done ? " on" : ""}" data-act="check" title="完成">${GB_ICONS.check}</button>
+          <span class="gc-title${top.done ? " done" : ""}" title="双击快改">${cdEsc(top.title)}</span>
+          <span class="gc-acts">
+            <button class="gb-icon-btn" data-act="add" title="加小便签">${GB_ICONS.plus}</button>
+            <button class="gb-icon-btn" data-act="edit" title="编辑">${GB_ICONS.pencil}</button>
+            <button class="gb-icon-btn danger" data-act="del" title="删除">${GB_ICONS.trash}</button>
+          </span>
+        </div>
+        <div class="gc-prog"><i style="width:${pct}%"></i></div>
+        <div class="gc-meta"><span>小便签 ${doneN}/${kids.length}</span><span>${metaRight}</span></div>
+        ${kids.length ? `<div class="gc-children">${kids.map(gbChildRow).join("")}</div>` : ""}
+      </article>
+    </div>`;
+  };
+
+  const gbSmallNote = (k) => `
+    <div class="note-wrap small" data-id="${cdEsc(k.id)}" style="--s:${gbScaleOf(k)};left:${gbNum(k.x, 40)}px;top:${gbNum(k.y, 40)}px">
+      <article class="stamp small ${cdEsc(k.color || "blue")}${k.done ? " done" : ""}">
+        ${gbTimeChip(k)}
+        <button class="gc-check${k.done ? " on" : ""}" data-act="check" title="完成">${GB_ICONS.check}</button>
+        <span class="n" title="双击快改">${cdEsc(k.title)}</span>
+        <button class="gb-icon-btn" data-act="edit" title="编辑">${GB_ICONS.pencil}</button>
+        <button class="gb-icon-btn danger" data-act="del" title="删除">${GB_ICONS.trash}</button>
+      </article>
+    </div>`;
+
+  const gbRender = () => {
+    $("#gb-search").value = GB.q;
+    const canvas = $("#gb-canvas");
+    const tops = GB.goals.filter((g) => !g.parent_id);
+    const bigs = tops.filter((g) => (g.kind || "big") === "big");
+    const loose = GB.goals.filter(
+      (g) => !g.parent_id && (g.kind || "big") === "small",
+    );
+    const orphans = GB.goals.filter(
+      (g) => g.parent_id && !gbGoalById(g.parent_id),
+    );
+    canvas.innerHTML =
+      bigs.length || loose.length || orphans.length
+        ? bigs.map(gbBigNote).join("") +
+          loose.map(gbSmallNote).join("") +
+          orphans.map(gbSmallNote).join("")
+        : GB.goals.length
+          ? '<div class="gb-empty">没有匹配的便签</div>'
+          : '<div class="gb-empty">白板还是空的<br/>点右上「＋ 新便签」开始规划</div>';
+    gbRenderTags();
+    gbApplyTimeFilter();
+    $("#gb-hint").textContent =
+      "双击标题快改 · ✎ 完整编辑 · 拖到大便签上=挂靠 · Ctrl+滚轮缩放";
+  };
+
+  const gbRenderTags = () => {
+    const root = $("#gb-tags");
+    if (!root) return;
+    let html = `<button class="dy-chip${GB.selTags.size ? "" : " on"}" data-tag="">全部</button>`;
+    for (const t of GB.tags) {
+      const on = GB.selTags.has(t.tag) ? " on" : "";
+      html += `<button class="dy-chip${on}" data-tag="${cdEsc(t.tag)}">#${cdEsc(
+        t.tag,
+      )}<span class="n">${t.count}</span></button>`;
+    }
+    root.innerHTML = html;
+  };
+
+  // ── 时间高亮筛选（选定时段内高亮，之外置灰） ──────────────────
+  const gbGoalRange = (g) => {
+    const sMs = g.start
+      ? new Date(String(g.start).replace(" ", "T")).getTime()
+      : NaN;
+    const eMs = g.end
+      ? new Date(String(g.end).replace(" ", "T")).getTime()
+      : NaN;
+    if (!Number.isFinite(sMs) && !Number.isFinite(eMs)) return null;
+    const s = Number.isFinite(sMs) ? sMs : eMs;
+    const e = Number.isFinite(eMs) ? eMs : sMs;
+    return [Math.min(s, e), Math.max(s, e)];
+  };
+  const gbApplyTimeFilter = () => {
+    const from = GB.tf.from;
+    const to = GB.tf.to;
+    const active = !!(from || to);
+    $("#gb-tf-clear").hidden = !active;
+    const f = gbDatePart(from);
+    const t = gbDatePart(to);
+    $("#gb-tf-label").textContent = active
+      ? `${f ? f.slice(5) : "…"} → ${t ? t.slice(5) : "…"}`
+      : "日期高亮";
+    const canvas = $("#gb-canvas");
+    canvas
+      .querySelectorAll(".inrange, .dim")
+      .forEach((el) => el.classList.remove("inrange", "dim"));
+    if (!active) return;
+    const fromMs = from ? new Date(from).getTime() : null;
+    const toMs = to ? new Date(to).getTime() : null;
+    const hit = {};
+    for (const g of GB.goals) {
+      const r = gbGoalRange(g);
+      if (!r) {
+        hit[g.id] = false;
+        continue;
+      }
+      hit[g.id] =
+        (fromMs === null || r[1] >= fromMs) &&
+        (toMs === null || r[0] <= toMs);
+    }
+    for (const el of canvas.querySelectorAll(".note-wrap[data-id], .gc-child[data-id]")) {
+      const id = el.dataset.id;
+      if (el.classList.contains("gc-child")) {
+        el.classList.add(hit[id] ? "inrange" : "dim");
+        continue;
+      }
+      const g = gbGoalById(id);
+      if (!g || (g.kind || "big") !== "big") {
+        el.classList.add(hit[id] ? "inrange" : "dim");
+        continue;
+      }
+      // 大便签：自身或任一小便签命中 → 高亮；全不命中 → 置灰
+      const kids = gbKidsOf(id);
+      const kidHit = kids.some((k) => hit[k.id]);
+      el.classList.add(hit[id] || kidHit ? "inrange" : "dim");
+    }
+  };
+
+  // ── 检索 / 标签 ───────────────────────────────────────────────
+  let gbSearchTimer = null;
+  const gbScheduleSearch = () => {
+    clearTimeout(gbSearchTimer);
+    gbSearchTimer = setTimeout(() => {
+      GB.q = $("#gb-search").value.trim();
+      gbLoad();
+    }, 300);
+  };
+
+  // ── board actions ─────────────────────────────────────────────
+  const gbArmDel = (btn, msg) => {
+    if (btn.dataset.armed === "1") return false;
+    btn.dataset.armed = "1";
+    btn.classList.add("armed");
+    toast(msg);
+    clearTimeout(gbDelTimer);
+    gbDelTimer = setTimeout(() => {
+      btn.dataset.armed = "";
+      btn.classList.remove("armed");
+    }, 4000);
+    return true;
+  };
+
+  const gbToggleDone = async (goal) => {
+    try {
+      const r = await apiPost("goals/update", { id: goal.id, done: !goal.done });
+      const local = gbGoalById(goal.id);
+      if (local) local.done = r.goal.done;
+      gbRender();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+
+  const gbDeleteGoal = async (goal) => {
+    try {
+      const r = await apiPost("goals/delete", { id: goal.id });
+      toast(r.removed > 1 ? `已删除（含 ${r.removed - 1} 张小便签）` : "已删除");
+      await gbLoad();
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+
+  $("#gb-board").addEventListener("click", (e) => {
+    if (Date.now() < gbSuppressClickUntil) return;
+    const actEl = e.target.closest("[data-act]");
+    if (!actEl) return;
+    const holder = actEl.closest("[data-id]");
+    if (!holder) return;
+    const goal = gbGoalById(holder.dataset.id);
+    if (!goal) return;
+    const act = actEl.dataset.act;
+    if (act === "check") gbToggleDone(goal);
+    else if (act === "edit") gbOpenGoalModal({}, goal);
+    else if (act === "add") gbOpenGoalModal({ parent: goal.id });
+    else if (act === "del") {
+      if (!gbArmDel(actEl, `再点一次删除《${goal.title}》`)) {
+        gbDeleteGoal(goal);
+      }
+    }
+  });
+
+  // ── 双击标题行内快改（Enter 保存 / Esc 取失 / 失焦保存） ──────
+  const gbInlineEdit = (span, goal) => {
+    if (!span || span.querySelector("input")) return;
+    const prev = span.textContent;
+    span.textContent = "";
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.className = "gb-inline";
+    inp.maxLength = 200;
+    inp.value = goal.title;
+    span.appendChild(inp);
+    inp.focus();
+    inp.select();
+    let finished = false;
+    const finish = async (save) => {
+      if (finished) return;
+      finished = true;
+      const v = inp.value.trim();
+      if (inp.parentNode === span) span.removeChild(inp);
+      if (save && v && v !== goal.title) {
+        try {
+          const r = await apiPost("goals/update", { id: goal.id, title: v });
+          goal.title = r.goal.title;
+          span.textContent = goal.title;
+          toast("已修改标题");
+        } catch (err) {
+          toast(errText(err));
+          span.textContent = prev;
+        }
+      } else {
+        span.textContent = prev;
+      }
+    };
+    inp.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") finish(true);
+      else if (ev.key === "Escape") finish(false);
+    });
+    inp.addEventListener("blur", () => finish(true));
+  };
+  $("#gb-board").addEventListener("dblclick", (e) => {
+    if (Date.now() < gbSuppressClickUntil) return;
+    const txt = e.target.closest(".gc-title, .n, .txt");
+    if (!txt) return;
+    const span = txt.classList.contains("txt")
+      ? txt.querySelector(".ti")
+      : txt;
+    if (!span) return;
+    const holder = span.closest("[data-id]");
+    if (!holder) return;
+    const goal = gbGoalById(holder.dataset.id);
+    if (!goal) return;
+    gbInlineEdit(span, goal);
+  });
+
+  // ── 拖动：整张便签移动；小便签拖到大便签=挂靠；子行拖出=独立 ──
+  const gbClearHi = () => {
+    document
+      .querySelectorAll(".drop-hi")
+      .forEach((el) => el.classList.remove("drop-hi"));
+  };
+  const gbFindBigAt = (x, y, excludeId) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    const wrap = el.closest(".note-wrap.big");
+    if (!wrap || wrap.dataset.id === excludeId) return null;
+    return wrap;
+  };
+  const gbDragMove = (ev) => {
+    if (!gbDrag) return;
+    const dx = ev.clientX - gbDrag.startX;
+    const dy = ev.clientY - gbDrag.startY;
+    if (!gbDrag.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+    if (!gbDrag.moved) {
+      gbDrag.moved = true;
+      gbDrag.el.classList.add("gb-dragging");
+      gbDrag.el.style.pointerEvents = "none";
+    }
+    const { el, kind, canvas } = gbDrag;
+    gbClearHi();
+    if (kind === "child") {
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      const target = gbFindBigAt(ev.clientX, ev.clientY, gbDrag.parentId);
+      if (target) target.classList.add("drop-hi");
+      gbDrag.target = target;
+      return;
+    }
+    // wrap（大便签 / 独立小便签）
+    const rect = el.getBoundingClientRect();
+    const maxX = Math.max(0, canvas.clientWidth - rect.width);
+    const maxY = Math.max(0, canvas.clientHeight - rect.height);
+    const nx = Math.max(0, Math.min(maxX, gbDrag.origX + dx / gbDrag.scale));
+    const ny = Math.max(0, Math.min(maxY, gbDrag.origY + dy / gbDrag.scale));
+    el.style.left = nx + "px";
+    el.style.top = ny + "px";
+    gbDrag.posX = Math.round(nx);
+    gbDrag.posY = Math.round(ny);
+    // 独立小便签悬停大便签 → 提示挂靠
+    if (gbDrag.joinable) {
+      const target = gbFindBigAt(ev.clientX, ev.clientY, gbDrag.id);
+      if (target) target.classList.add("drop-hi");
+      gbDrag.target = target;
+    }
+  };
+  const gbDragEnd = async () => {
+    window.removeEventListener("pointermove", gbDragMove);
+    if (!gbDrag) return;
+    const d = gbDrag;
+    gbDrag = null;
+    d.el.classList.remove("gb-dragging");
+    d.el.style.pointerEvents = "";
+    if (d.kind === "child") d.el.style.transform = "";
+    gbClearHi();
+    if (!d.moved) return;
+    gbSuppressClickUntil = Date.now() + 400;
+    try {
+      if (d.kind === "child") {
+        const target = d.target;
+        if (target) {
+          await apiPost("goals/update", {
+            id: d.id,
+            parent_id: target.dataset.id,
+          });
+          toast("已挂到大便签下");
+        } else if (d.overCard && d.overCard === d.parentId) {
+          // 同卡内拖动 → 组内调序（按落点相对行中心计算新序号）
+          const cardEl = document.querySelector(
+            `.note-wrap[data-id="${d.parentId}"]`,
+          );
+          if (cardEl) {
+            const rows = [...cardEl.querySelectorAll(".gc-child")].filter(
+              (r) => r.dataset.id !== d.id,
+            );
+            let idx = rows.length;
+            for (let i = 0; i < rows.length; i++) {
+              const rc = rows[i].getBoundingClientRect();
+              if (d.endY < (rc.top + rc.bottom) / 2) {
+                idx = i;
+                break;
+              }
+            }
+            const ordered = rows.map((r) => r.dataset.id);
+            ordered.splice(idx, 0, d.id);
+            await apiPost("goals/order", {
+              parent_id: d.parentId,
+              ordered_ids: ordered,
+            });
+          }
+          await gbLoad();
+          return;
+        } else if (d.droppedEmpty) {
+          // 拖出 → 独立小便签，落点即坐标
+          const cr = $("#gb-canvas").getBoundingClientRect();
+          await apiPost("goals/update", {
+            id: d.id,
+            parent_id: null,
+            x: Math.max(0, Math.round(d.endX - cr.left)),
+            y: Math.max(0, Math.round(d.endY - cr.top)),
+          });
+          toast("已独立到白板");
+        } else {
+          gbRender(); // 放回原处
+          return;
+        }
+        await gbLoad();
+        return;
+      }
+      if (d.joinable && d.target) {
+        await apiPost("goals/update", { id: d.id, parent_id: d.target.dataset.id });
+        toast("已挂到大便签下");
+        await gbLoad();
+        return;
+      }
+      // 普通移动 → 固定坐标
+      await apiPost("goals/update", { id: d.id, x: d.posX, y: d.posY });
+      const g = gbGoalById(d.id);
+      if (g) {
+        g.x = d.posX;
+        g.y = d.posY;
+      }
+    } catch (e) {
+      toast(errText(e));
+      gbLoad();
+    }
+  };
+  $("#gb-board").addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    if (ev.target.closest("button")) return;
+    const child = ev.target.closest(".gc-child");
+    const wrap = !child && ev.target.closest(".note-wrap");
+    if (!child && !wrap) return;
+    const canvas = $("#gb-canvas");
+    if (child) {
+      gbDrag = {
+        kind: "child",
+        el: child,
+        id: child.dataset.id,
+        parentId: child.closest(".note-wrap")?.dataset.id || null,
+        canvas,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        moved: false,
+        target: null,
+        droppedEmpty: false,
+        endX: 0,
+        endY: 0,
+      };
+    } else {
+      const g = gbGoalById(wrap.dataset.id);
+      const sc = gbScaleOf(g);
+      gbDrag = {
+        kind: "wrap",
+        el: wrap,
+        id: wrap.dataset.id,
+        canvas,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        origX: parseInt(wrap.style.left, 10) || 0,
+        origY: parseInt(wrap.style.top, 10) || 0,
+        scale: sc,
+        joinable:
+          !!g && (g.kind || "big") === "small" && !g.parent_id,
+        target: null,
+        posX: parseInt(wrap.style.left, 10) || 0,
+        posY: parseInt(wrap.style.top, 10) || 0,
+        moved: false,
+      };
+    }
+    window.addEventListener("pointermove", gbDragMove);
+    window.addEventListener(
+      "pointerup",
+      (ev2) => {
+        if (gbDrag) {
+          gbDrag.endX = ev2.clientX;
+          gbDrag.endY = ev2.clientY;
+          if (gbDrag.kind === "child") {
+            const el = document.elementFromPoint(ev2.clientX, ev2.clientY);
+            const wrap = el && el.closest(".note-wrap");
+            gbDrag.overCard = wrap ? wrap.dataset.id : null;
+            gbDrag.droppedEmpty = !gbDrag.overCard;
+          }
+        }
+        gbDragEnd();
+      },
+      { once: true },
+    );
+  });
+
+  // ── Ctrl+滚轮缩放（每张便签独立，防抖持久化） ──────────────────
+  $("#gb-board").addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const wrap = e.target.closest?.(".note-wrap");
+      if (!wrap) return;
+      const g = gbGoalById(wrap.dataset.id);
+      if (!g) return;
+      const cur = gbScaleOf(g);
+      const ns = Math.min(
+        2,
+        Math.max(0.5, Math.round((cur + (e.deltaY < 0 ? 0.1 : -0.1)) * 100) / 100),
+      );
+      if (ns === cur) return;
+      g.scale = ns;
+      wrap.style.setProperty("--s", ns);
+      clearTimeout(gbScaleTimers.get(g.id));
+      gbScaleTimers.set(
+        g.id,
+        setTimeout(() => {
+          gbScaleTimers.delete(g.id);
+          apiPost("goals/update", { id: g.id, scale: ns }).catch((err) => {
+            toast(errText(err));
+            gbLoad();
+          });
+        }, 400),
+      );
+    },
+    { passive: false },
+  );
+
+  // ── goal modal（大/小便签 + 颜色 + 时间快选 + 标签） ───────────
+  const gbSetType = (type) => {
+    GB.gType = type;
+    $("#gb-g-type")
+      .querySelectorAll(".seg")
+      .forEach((b) => b.classList.toggle("on", b.dataset.type === type));
+    $("#gb-g-parent-row").hidden = type !== "small";
+  };
+  const gbFillParentSelect = (excludeId, keepId) => {
+    const sel = $("#gb-g-parent");
+    const tops = GB.goals.filter(
+      (g) => !g.parent_id && (g.kind || "big") === "big" && g.id !== excludeId,
+    );
+    sel.innerHTML = tops
+      .map((g) => `<option value="${cdEsc(g.id)}">${cdEsc(g.title)}</option>`)
+      .join("");
+    if (keepId && tops.some((g) => g.id === keepId)) sel.value = keepId;
+    return tops.length;
+  };
+  const gbBuildSwatches = () => {
+    const wrap = $("#gb-g-colors");
+    wrap.innerHTML = "";
+    for (const c of Object.keys(COLOR_CN)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "swatch-btn" + (GB.selColor === c ? " on" : "");
+      b.dataset.color = c;
+      b.style.background = `var(--c-${c})`;
+      b.addEventListener("click", () => {
+        GB.selColor = c;
+        wrap
+          .querySelectorAll(".swatch-btn")
+          .forEach((x) => x.classList.toggle("on", x.dataset.color === c));
+      });
+      wrap.appendChild(b);
+    }
+  };
+  const gbOpenGoalModal = (mode = {}, goal) => {
+    const parentCtx = mode.parent || goal?.parent_id || null;
+    GB.mode = { type: "goal", id: goal?.id, parent: mode.parent || null };
+    $("#gb-goal-title").textContent = goal
+      ? "编辑便签"
+      : mode.parent
+        ? "新小便签"
+        : "新便签";
+    $("#gb-g-title").value = goal?.title || "";
+    $("#gb-g-note").value = goal?.note || "";
+    $("#gb-g-tags").value = (goal?.tags || []).join(" ");
+    $("#gb-g-start").value = goal?.start || "";
+    $("#gb-g-end").value = goal?.end || "";
+    GB.selColor = goal?.color || "blue";
+    gbBuildSwatches();
+    gbFillParentSelect(goal?.id, parentCtx);
+    gbSetType(parentCtx || goal?.kind === "small" ? "small" : "big");
+    const del = $("#gb-goal-del");
+    del.hidden = !goal;
+    del.dataset.armed = "";
+    del.textContent = "删除";
+    $("#gb-goal-modal").hidden = false;
+    $("#gb-g-title").focus();
+  };
+  $("#gb-g-type").addEventListener("click", (e) => {
+    const b = e.target.closest(".seg");
+    if (b) gbSetType(b.dataset.type);
+  });
+
+  // ── 日历点选起止（表单 📅 与日期高亮 📅 共用一套交互） ──
+  const gbCal = {
+    y: 0,
+    m: 0,
+    start: "",
+    end: "",
+    picking: "start",
+    target: "form", // form | tf
+    popEl: null,
+  };
+  const gbDatePart = (v) => {
+    const full = String(v || "").match(/\d{4}-\d{2}-\d{2}/);
+    if (full) return full[0];
+    const md = String(v || "").trim().match(/^(\d{1,2})-(\d{1,2})(?:\s|$)/);
+    if (md) {
+      return `${new Date().getFullYear()}-${pad(Number(md[1]))}-${pad(Number(md[2]))}`;
+    }
+    return "";
+  };
+  const gbSetDateField = (input, ymd) => {
+    const cur = (input.value || "").trim();
+    const hasDate =
+      /\d{4}-\d{1,2}-\d{1,2}/.test(cur) ||
+      /(?:^|\s)\d{1,2}-\d{1,2}(?:\s|$)/.test(cur);
+    if (!hasDate) {
+      // 字段里还没有日期（如只输了时间）→ 日期 + 保留已输时间
+      input.value = cur ? `${ymd} ${cur}` : ymd;
+      return;
+    }
+    const m = cur.match(/\s(\d{1,2}(:\d{1,2})?)$/);
+    input.value = m ? `${ymd} ${m[1]}` : ymd;
+  };
+  const gbCalHint = () => {
+    if (gbCal.picking === "end") return "再点一个日期作为结束（同一天 = 仅此日）";
+    if (gbCal.picking === "done") return "已选完成 · 点日期重新选择";
+    return gbCal.target === "tf" ? "点选高亮起始日期" : "点选开始日期";
+  };
+  const gbCalSource = () => {
+    if (gbCal.target === "tf") {
+      return { start: GB.tf.from, end: GB.tf.to };
+    }
+    return {
+      start: ($("#gb-g-start").value || "").trim(),
+      end: ($("#gb-g-end").value || "").trim(),
+    };
+  };
+  const gbCalWrite = (which, ymd) => {
+    if (gbCal.target === "tf") {
+      if (which === "start") {
+        GB.tf.from = `${ymd}T00:00`;
+        GB.tf.to = ""; // 重新选起点时清掉旧终点
+      } else {
+        GB.tf.to = `${ymd}T23:59`;
+      }
+      gbApplyTimeFilter();
+      return;
+    }
+    if (which === "start") {
+      gbSetDateField($("#gb-g-start"), ymd);
+      $("#gb-g-end").value = "";
+    } else {
+      gbSetDateField($("#gb-g-end"), ymd);
+    }
+  };
+  const gbRenderCal = () => {
+    const pop = gbCal.popEl;
+    if (!pop) return;
+    const first = new Date(gbCal.y, gbCal.m - 1, 1);
+    const offset = first.getDay();
+    const dim = new Date(gbCal.y, gbCal.m, 0).getDate();
+    const todayS = dayKey(new Date());
+    let cells = "";
+    for (let i = 0; i < offset; i++) cells += '<span class="w"></span>';
+    for (let d = 1; d <= dim; d++) {
+      const ymd = `${gbCal.y}-${pad(gbCal.m)}-${pad(d)}`;
+      const cls = ["d"];
+      if (ymd === todayS) cls.push("today");
+      if (gbCal.start && ymd === gbCal.start) cls.push("sel");
+      else if (gbCal.end && ymd === gbCal.end) cls.push("sel");
+      else if (gbCal.start && gbCal.end && ymd > gbCal.start && ymd < gbCal.end)
+        cls.push("rng");
+      cells += `<button type="button" class="${cls.join(" ")}" data-d="${ymd}">${d}</button>`;
+    }
+    pop.innerHTML = `
+      <div class="gb-cal-head">
+        <button type="button" data-nav="-1">‹</button>
+        <span class="m">${gbCal.y} 年 ${gbCal.m} 月</span>
+        <button type="button" data-nav="1">›</button>
+      </div>
+      <div class="gb-cal-hint">${gbCalHint()}</div>
+      <div class="gb-cal-grid">${"日一二三四五六"
+        .split("")
+        .map((w) => `<span class="w">${w}</span>`)
+        .join("")}${cells}</div>`;
+  };
+  const gbCalDayPick = (ymd) => {
+    if (gbCal.picking === "done") {
+      gbCal.start = "";
+      gbCal.end = "";
+      gbCal.picking = "start";
+    }
+    if (gbCal.picking === "start" || !gbCal.start) {
+      gbCalWrite("start", ymd);
+      gbCal.start = ymd;
+      gbCal.end = "";
+      gbCal.picking = "end";
+      return;
+    }
+    if (ymd < gbCal.start) {
+      // 点了更早的日期 → 视为新的开始
+      gbCalWrite("start", ymd);
+      gbCal.start = ymd;
+      gbCal.picking = "end";
+      return;
+    }
+    gbCalWrite("end", ymd);
+    gbCal.end = ymd;
+    gbCal.picking = "done";
+  };
+  const gbOpenCal = (target) => {
+    const pop = target === "tf" ? $("#gb-tf-cal-pop") : $("#gb-cal-pop");
+    const other = target === "tf" ? $("#gb-cal-pop") : $("#gb-tf-cal-pop");
+    other.hidden = true;
+    if (!pop.hidden && gbCal.target === target) {
+      pop.hidden = true;
+      return;
+    }
+    gbCal.target = target;
+    gbCal.popEl = pop;
+    const src = gbCalSource();
+    gbCal.start = gbDatePart(src.start);
+    gbCal.end = gbDatePart(src.end);
+    if (!src.start) gbCal.picking = "start";
+    else if (!src.end) gbCal.picking = "end";
+    else gbCal.picking = "start";
+    const ref = gbCal.start || dayKey(new Date());
+    gbCal.y = Number(ref.slice(0, 4));
+    gbCal.m = Number(ref.slice(5, 7));
+    gbRenderCal();
+    pop.hidden = false;
+  };
+  const gbCalPopClick = (e) => {
+    e.stopPropagation();
+    const nav = e.target.closest("[data-nav]");
+    if (nav) {
+      gbCal.m += Number(nav.dataset.nav);
+      if (gbCal.m < 1) {
+        gbCal.m = 12;
+        gbCal.y -= 1;
+      }
+      if (gbCal.m > 12) {
+        gbCal.m = 1;
+        gbCal.y += 1;
+      }
+      gbRenderCal();
+      return;
+    }
+    const cell = e.target.closest(".d[data-d]");
+    if (!cell) return;
+    gbCalDayPick(cell.dataset.d);
+    gbRenderCal();
+  };
+  $("#gb-cal").addEventListener("click", (e) => {
+    e.stopPropagation();
+    gbOpenCal("form");
+  });
+  $("#gb-cal-pop").addEventListener("click", gbCalPopClick);
+  $("#gb-tf-cal-pop").addEventListener("click", gbCalPopClick);
+
+  // 时间快选：列出已有便签的时间（独立请求，不经过滤）
+  const gbOpenTimePick = async () => {
+    const pop = $("#gb-time-pop");
+    if (!pop.hidden) {
+      pop.hidden = true;
+      return;
+    }
+    try {
+      const data = await apiGet("goals", {});
+      const seen = new Set();
+      const rows = [];
+      for (const g of data.goals || []) {
+        if (!g.start && !g.end) continue;
+        const key = `${g.start || ""}|${g.end || ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({ g });
+      }
+      rows.sort((a, b) =>
+        String(a.g.start || "").localeCompare(String(b.g.start || "")),
+      );
+      pop.innerHTML = rows.length
+        ? rows
+            .map(
+              (r) =>
+                `<div class="it" data-s="${cdEsc(r.g.start || "")}" data-e="${cdEsc(r.g.end || "")}">${cdEsc(gbTimeText(r.g))}</div>`,
+            )
+            .join("")
+        : '<div class="it" style="color:var(--text-3)">还没有带日程的便签</div>';
+      pop.hidden = false;
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+  $("#gb-time-pick").addEventListener("click", (e) => {
+    e.stopPropagation();
+    gbOpenTimePick();
+  });
+  $("#gb-time-pop").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const it = e.target.closest(".it[data-s]");
+    if (!it) return;
+    $("#gb-g-start").value = it.dataset.s;
+    $("#gb-g-end").value = it.dataset.e;
+    $("#gb-time-pop").hidden = true;
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".gb-time")) {
+      $("#gb-time-pop").hidden = true;
+      $("#gb-cal-pop").hidden = true;
+    }
+    if (!e.target.closest(".gb-timefilter")) $("#gb-tf-cal-pop").hidden = true;
+  });
+
+  const gbDefaultPos = (parent_id) => {
+    if (parent_id) {
+      const wrap = document.querySelector(
+        `.note-wrap[data-id="${parent_id}"]`,
+      );
+      if (!wrap) return {};
+      const canvas = $("#gb-canvas");
+      const px = parseInt(wrap.style.left, 10) || 0;
+      const py = parseInt(wrap.style.top, 10) || 0;
+      const sc = gbScaleOf(gbGoalById(parent_id));
+      let x = px + 40 * sc;
+      let y = py + wrap.offsetHeight * sc + 14;
+      const maxY = Math.max(0, canvas.clientHeight - 70);
+      if (y > maxY) {
+        x = px + wrap.offsetWidth * sc + 16;
+        y = Math.max(0, Math.min(maxY, py));
+      }
+      return { x: Math.round(x), y: Math.round(y) };
+    }
+    const n = GB.goals.filter((g) => !g.parent_id).length;
+    return { x: 24 + (n % 3) * 296, y: 24 + Math.floor(n / 3) * 270 };
+  };
+
+  $("#gb-goal-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const isSmall = GB.gType === "small";
+    const parent_id = isSmall ? $("#gb-g-parent").value || null : null;
+    const body = {
+      title: $("#gb-g-title").value.trim(),
+      note: $("#gb-g-note").value,
+      kind: isSmall ? "small" : "big",
+      parent_id,
+      color: GB.selColor,
+    };
+    if (!body.title) return toast("标题不能为空");
+    body.start = $("#gb-g-start").value.trim() || null;
+    body.end = $("#gb-g-end").value.trim() || null;
+    body.tags = String($("#gb-g-tags").value || "")
+      .split(/[,，\s]+/)
+      .map((t) => t.replace(/^#/, ""))
+      .filter(Boolean);
+    try {
+      if (GB.mode?.id) {
+        await apiPost("goals/update", { id: GB.mode.id, ...body });
+        toast("已保存");
+      } else {
+        await apiPost("goals", {
+          ...body,
+          ...gbDefaultPos(parent_id),
+        });
+        toast("已创建");
+      }
+      $("#gb-goal-modal").hidden = true;
+      GB.mode = null;
+      await gbLoad();
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+  $("#gb-goal-cancel").addEventListener("click", () => {
+    $("#gb-goal-modal").hidden = true;
+    GB.mode = null;
+  });
+  $("#gb-goal-del").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.textContent = "确认删除？";
+      return;
+    }
+    if (!GB.mode?.id) return;
+    const goal = gbGoalById(GB.mode.id);
+    try {
+      await gbDeleteGoal(goal || { id: GB.mode.id, title: "" });
+      $("#gb-goal-modal").hidden = true;
+      GB.mode = null;
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
+
+  // ── toolbar & tab switch ──────────────────────────────────────
+  $("#gb-search").addEventListener("input", gbScheduleSearch);
+  $("#gb-tags").addEventListener("click", (e) => {
+    const chip = e.target.closest(".dy-chip");
+    if (!chip) return;
+    const tag = chip.dataset.tag || "";
+    if (!tag) GB.selTags.clear();
+    else if (GB.selTags.has(tag)) GB.selTags.delete(tag);
+    else GB.selTags.add(tag);
+    gbLoad();
+  });
+  $("#gb-tf-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    gbOpenCal("tf");
+  });
+  $("#gb-tf-clear").addEventListener("click", () => {
+    GB.tf = { from: "", to: "" };
+    gbApplyTimeFilter();
+  });
+  $("#gb-new-goal").addEventListener("click", () => gbOpenGoalModal({}));
+
+  const setGoalsTab = (on) => {
+    if (GB.active === on) return;
+    if (on && CD.active) setCountdownTab(false); // 标签互斥
+    if (on && DI.active) setDiaryTab(false);
+    GB.active = on;
+    $("#btn-goals").classList.toggle("on", on);
+    $("#goals-view").hidden = !on;
+    $(".views").hidden = on;
+    if (on) {
+      $("#big-title").textContent = "目标";
+      gbLoad();
+    } else {
+      render(); // 恢复标题/返回胶囊/视图状态
+    }
+  };
+  $("#btn-goals").addEventListener("click", () => setGoalsTab(!GB.active));
 
   (async function boot() {
     const applyTheme = (isDark) => {
