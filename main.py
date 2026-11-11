@@ -352,6 +352,112 @@ if _HAS_TOOLS:
             return self.plugin.tool_list_diary(**kwargs)
 
     @pyd_dataclass
+    class AddGoalTool(FunctionTool[AstrAgentContext]):
+        """Create a note (big note or small note) on the whiteboard."""
+
+        name: str = "add_goal"
+        description: str = (
+            "创建便签（大便签，或挂在某大便签下的小便签）。parent 缺省=独立大便签；"
+            "支持 #标签(tags)、时间与颜色。直接创建，无需用户确认。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "便签标题（必填，≤200字）"},
+                    "parent": {"type": "string", "description": "大便签标题（挂为小便签）；缺省创建独立大便签"},
+                    "note": {"type": "string", "description": "备注；缺省空"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标签列表（不含 # 号），可缺省",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "开始时间（YYYY-MM-DD HH:MM，可跨天）；可留空",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "结束时间（YYYY-MM-DD HH:MM）；缺省与开始相同；可留空",
+                    },
+                    "color": {
+                        "type": "string",
+                        "enum": list(COLOR_CHOICES),
+                        "description": "便签主颜色；缺省 blue",
+                    },
+                },
+                "required": ["title"],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_add_goal(**kwargs)
+
+    @pyd_dataclass
+    class ListGoalsTool(FunctionTool[AstrAgentContext]):
+        """List whiteboard notes with progress and tags."""
+
+        name: str = "list_goals"
+        description: str = (
+            "列出白板便签与进度（大便签 + 其下小便签完成情况）。"
+            "可按关键词或标签过滤。仅查询，无需确认。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "关键词，匹配标题、备注或标签；缺省不过滤"},
+                    "tag": {"type": "string", "description": "按标签过滤（不含 # 号，逗号分隔为 AND）"},
+                },
+                "required": [],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_list_goals(**kwargs)
+
+    @pyd_dataclass
+    class UpdateGoalTool(FunctionTool[AstrAgentContext]):
+        """Update an existing note (title / note / done / tags / time)."""
+
+        name: str = "update_goal"
+        description: str = (
+            "修改已有便签（先 list_goals 拿 id）：可改标题、备注、标签、时间，"
+            "或标记完成/未完成。改动需先向用户复述并确认后再调用。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "便签 id（来自 list_goals）"},
+                    "title": {"type": "string", "description": "新标题"},
+                    "note": {"type": "string", "description": "新备注"},
+                    "done": {"type": "boolean", "description": "标记完成 true / 未完成 false"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标签列表（整体替换，不含 # 号）",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "开始时间 YYYY-MM-DD HH:MM；传空字符串清除",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "结束时间 YYYY-MM-DD HH:MM；传空字符串清除",
+                    },
+                },
+                "required": ["id"],
+            }
+        )
+        plugin: Any = None
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            return self.plugin.tool_update_goal(**kwargs)
+
+    @pyd_dataclass
     class UpdateEventTool(FunctionTool[AstrAgentContext]):
         """Update an existing event after user confirmation."""
 
@@ -430,6 +536,7 @@ class CalendarPlugin(Star):
         self._lock = threading.RLock()
         self._events: list[dict] = []
         self._diary: list[dict] = []
+        self._goals_items: list[dict] = []
         self._state: dict = {
             "display_mode": "panel",
             "theme": "light",
@@ -516,6 +623,7 @@ class CalendarPlugin(Star):
         self._data_dir = self._resolve_data_dir()
         self._load_events()
         self._load_diary()
+        self._load_goals()
         self._load_state()
         self._holiday_override = lunar.load_holiday_override(self._holiday_override_path)
         self._register_apis()
@@ -561,6 +669,7 @@ class CalendarPlugin(Star):
             self._save_events()
             self._save_state()
             self._save_diary()
+            self._save_goals()
 
     def _resolve_data_dir(self) -> Path:
         try:
@@ -589,6 +698,68 @@ class CalendarPlugin(Star):
     @property
     def _diary_path(self) -> Path:
         return self._data_dir / "diary.json"
+
+    @property
+    def _goals_path(self) -> Path:
+        return self._data_dir / "goals.json"
+
+    def _load_goals(self) -> None:
+        data = rec.load_json_file(
+            str(self._goals_path), {"version": 1, "goals": []}
+        )
+        if not isinstance(data, dict):
+            data = {}
+        goals = data.get("goals")
+        self._goals_items = [
+            g for g in goals if isinstance(g, dict) and g.get("id")
+        ] if isinstance(goals, list) else []
+        # 周期概念已取消：迁移旧数据（丢弃 cycle_id，补齐便签字段）
+        for g in self._goals_items:
+            g.pop("cycle_id", None)
+            g.setdefault("kind", "small" if g.get("parent_id") else "big")
+            g.setdefault("scale", 1.0)
+            g.setdefault("tags", [])
+            # 旧三件套 date/start_time/end_time → 可跨天 start/end
+            if "date" in g:
+                d = g.pop("date", None)
+                t1 = g.pop("start_time", None)
+                t2 = g.pop("end_time", None)
+                if d:
+                    g["start"] = f"{d} {t1 or '00:00'}"
+                    g["end"] = f"{d} {t2 or '23:59'}"
+            g.pop("start_time", None)
+            g.pop("end_time", None)
+            g.setdefault("start", None)
+            g.setdefault("end", None)
+        # 旧数据无坐标：加载时补白板落点（大便签错位排布，小便签挂父便签下）
+        big_n = 0
+        for g in self._goals_items:
+            if g.get("parent_id"):
+                continue
+            if not isinstance(g.get("x"), (int, float)) or not isinstance(
+                g.get("y"), (int, float)
+            ):
+                g["x"] = 24 + (big_n % 3) * 296
+                g["y"] = 24 + (big_n // 3) * 270
+            big_n += 1
+        for g in self._goals_items:
+            if not g.get("parent_id"):
+                continue
+            if not isinstance(g.get("x"), (int, float)) or not isinstance(
+                g.get("y"), (int, float)
+            ):
+                parent = self._find_goal(self._goals_items, g.get("parent_id"))
+                g["x"] = int((parent or {}).get("x") or 0) + 40
+                g["y"] = int((parent or {}).get("y") or 0) + 270
+
+    def _save_goals(self) -> None:
+        try:
+            rec.atomic_write_json(
+                str(self._goals_path),
+                {"version": 1, "goals": self._goals_items},
+            )
+        except OSError as exc:
+            logger.error("[calendar] saving goals failed: %s", exc)
 
     def _load_diary(self) -> None:
         data = rec.load_json_file(str(self._diary_path), {"version": 1, "entries": []})
@@ -1680,6 +1851,365 @@ class CalendarPlugin(Star):
             key=lambda x: (-x["count"], x["tag"]),
         )
 
+    # ── goals (白板便签 · 无周期) ──────────────────────────────────────────
+    # 大便签(kind=big) / 小便签(kind=small)：小便签可挂大便签下(行内下划线行)
+    # 或独立存在；每张便签独立设时间/颜色/标签/缩放(scale)与白板坐标(x,y)。
+
+    @staticmethod
+    def _find_goal(goals: list[dict], goal_id: str) -> Optional[dict]:
+        return next((g for g in goals if g.get("id") == goal_id), None)
+
+    @classmethod
+    def _parse_when(cls, raw: str, end_side: bool = False) -> Optional[str]:
+        """宽松解析便签时间：可省略天/小时/分钟。
+        支持 2026-11-12 14:30 / 2026-11-12 14 / 2026-11-12 /
+        11-12 14:00 / 11-12 / 14:30 / 14（今天）。返回 'YYYY-MM-DD HH:MM'。
+        end_side=True 时“只到天”默认 23:59，否则 00:00。
+        """
+        s = str(raw or "").strip().replace("T", " ")
+        if not s:
+            return None
+        today = dt.date.today()
+        year = today.year
+        day: Optional[dt.date] = None
+        hh: Optional[int] = None
+        mm: Optional[int] = None
+        m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2})(?::(\d{1,2}))?)?$", s)
+        if m:
+            try:
+                day = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                raise ValueError(f"日期无效: {raw}")
+            if m.group(4) is not None:
+                hh = int(m.group(4))
+                mm = int(m.group(5) or 0)
+        else:
+            m = re.match(r"^(\d{1,2})-(\d{1,2})(?: (\d{1,2})(?::(\d{1,2}))?)?$", s)
+            if m:
+                mo, dd = int(m.group(1)), int(m.group(2))
+                cand = None
+                for y in (year, year + 1):
+                    try:
+                        cand = dt.date(y, mo, dd)
+                        break
+                    except ValueError:
+                        continue
+                if cand is None:
+                    raise ValueError(f"日期无效: {raw}")
+                if cand.year == year and (today - cand).days > 180:
+                    try:
+                        cand = dt.date(year + 1, mo, dd)
+                    except ValueError:
+                        pass
+                day = cand
+                if m.group(3) is not None:
+                    hh = int(m.group(3))
+                    mm = int(m.group(4) or 0)
+            else:
+                m = re.match(r"^(\d{1,2}):(\d{1,2})(?::\d{1,2})?$", s)
+                if m:
+                    day = today
+                    hh = int(m.group(1))
+                    mm = int(m.group(2))
+                else:
+                    m = re.match(r"^(\d{1,2})$", s)
+                    if m:
+                        day = today
+                        hh = int(m.group(1))
+                        mm = 0
+                    else:
+                        # 兜底：交给标准解析（给出可读错误）
+                        return parse_datetime(s).strftime("%Y-%m-%d %H:%M")
+        if hh is not None and hh > 23:
+            raise ValueError(f"小时无效: {raw}")
+        if mm is not None and mm > 59:
+            raise ValueError(f"分钟无效: {raw}")
+        if hh is None:
+            hh, mm = (23, 59) if end_side else (0, 0)
+        return f"{day:%Y-%m-%d} {hh:02d}:{int(mm or 0):02d}"
+
+    @staticmethod
+    def _check_goal_range(
+        start: Optional[str], end: Optional[str]
+    ) -> tuple[Optional[str], Optional[str]]:
+        """日程范围：只给一端则另一端补齐（只到天 → 补整天）；结束不早于开始。"""
+        if start and not end:
+            end = start[:10] + " 23:59" if start.endswith("00:00") else start
+        if end and not start:
+            start = end[:10] + " 00:00" if end.endswith("23:59") else end
+        if start and end and end < start:
+            raise ValueError("结束时间不能早于开始时间")
+        return start, end
+
+    @staticmethod
+    def _normalize_tags(tags: Any) -> list[str]:
+        """显式标签：去 #、去重、单个 ≤24 字、最多 10 个。"""
+        out: list[str] = []
+        if isinstance(tags, list):
+            for t in tags:
+                s = str(t).strip().lstrip("#")
+                if s and len(s) <= 24 and s not in out:
+                    out.append(s)
+        return out[:10]
+
+    @staticmethod
+    def _goal_tags(goal: dict) -> list[str]:
+        """展示/检索用标签 = 显式 tags ∪ 标题与正文中的 #标签。"""
+        out: list[str] = [str(t) for t in (goal.get("tags") or [])]
+        for t in extract_tags(
+            str(goal.get("title", "")) + "\n" + str(goal.get("note", ""))
+        ):
+            if t not in out:
+                out.append(t)
+        return out[:10]
+
+    def _validate_goal(self, data: dict, partial: bool = False) -> dict:
+        out: dict[str, Any] = {}
+        if not partial or "title" in data:
+            title = str(data.get("title") or "").strip()
+            if not title:
+                raise ValueError("目标标题不能为空")
+            if len(title) > 200:
+                raise ValueError("目标标题最长 200 字")
+            out["title"] = title
+        if "note" in data:
+            note = str(data.get("note") or "")
+            if len(note) > 2000:
+                raise ValueError("备注最长 2000 字")
+            out["note"] = note
+        if "color" in data:
+            color = str(data.get("color") or "blue")
+            out["color"] = color if color in COLOR_CHOICES else "blue"
+        if "done" in data:
+            out["done"] = bool(data.get("done"))
+        if "kind" in data:
+            kind = str(data.get("kind") or "")
+            if kind not in ("big", "small"):
+                raise ValueError("类型只能是大便签或小便签")
+            out["kind"] = kind
+        if "tags" in data:
+            out["tags"] = self._normalize_tags(data.get("tags"))
+        if "scale" in data and data.get("scale") is not None:
+            try:
+                sc = float(data.get("scale"))
+            except (TypeError, ValueError):
+                raise ValueError("缩放必须是数字")
+            if not 0.5 <= sc <= 2.0:
+                raise ValueError("缩放范围 0.5 ~ 2.0")
+            out["scale"] = round(sc, 2)
+        for key in ("x", "y"):
+            if key in data and data.get(key) is not None:
+                try:
+                    out[key] = max(0, min(100000, int(data.get(key))))
+                except (TypeError, ValueError):
+                    raise ValueError("便签坐标必须是整数")
+        for key in ("start", "end"):
+            if key in data:
+                out[key] = self._parse_when(
+                    str(data.get(key) or ""), end_side=(key == "end")
+                )
+        return out
+
+    def _goal_has_children(self, goal_id: str) -> bool:
+        return any(g.get("parent_id") == goal_id for g in self._goals_items)
+
+    def create_goal(self, payload: dict) -> dict:
+        with self._lock:
+            fields = self._validate_goal(payload, partial=False)
+            parent_id = payload.get("parent_id")
+            parent_id = str(parent_id) if parent_id else None
+            kind = fields.get("kind") or ("small" if parent_id else "big")
+            parent = None
+            if parent_id:
+                parent = self._find_goal(self._goals_items, parent_id)
+                if parent is None:
+                    raise ValueError("父便签不存在")
+                if parent.get("kind") != "big":
+                    raise ValueError("只能挂到大便签下")
+                if parent.get("parent_id"):
+                    raise ValueError("便签只支持两层结构")
+                if kind == "big":
+                    raise ValueError("大便签不能挂到别的便签下")
+            start, end = self._check_goal_range(
+                fields.get("start"), fields.get("end")
+            )
+            same = [
+                g
+                for g in self._goals_items
+                if (g.get("parent_id") or None) == parent_id
+            ]
+            order = max((int(g.get("order") or 0) for g in same), default=0) + 1
+            x = fields.get("x")
+            y = fields.get("y")
+            if x is None or y is None:
+                if parent is not None:
+                    x = int(parent.get("x") or 0) + 40
+                    y = int(parent.get("y") or 0) + 270
+                else:
+                    n = sum(
+                        1 for g in self._goals_items if not g.get("parent_id")
+                    )
+                    x = 24 + (n % 3) * 296
+                    y = 24 + (n // 3) * 270
+            now = dt_str(dt.datetime.now())
+            goal = {
+                "id": uuid.uuid4().hex,
+                "parent_id": parent_id,
+                "kind": kind,
+                "title": fields["title"],
+                "note": fields.get("note", ""),
+                "color": fields.get("color", "blue"),
+                "done": fields.get("done", False),
+                "tags": fields.get("tags", []),
+                "scale": fields.get("scale", 1.0),
+                "start": start,
+                "end": end,
+                "order": order,
+                "x": int(x),
+                "y": int(y),
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._goals_items.append(goal)
+            self._save_goals()
+            return goal
+
+    def update_goal(self, goal_id: str, payload: dict) -> dict:
+        with self._lock:
+            goal = self._find_goal(self._goals_items, goal_id)
+            if goal is None:
+                raise KeyError(f"未找到目标 {goal_id}")
+            fields = self._validate_goal(payload, partial=True)
+            m_start = fields["start"] if "start" in fields else goal.get("start")
+            m_end = fields["end"] if "end" in fields else goal.get("end")
+            m_start, m_end = self._check_goal_range(m_start, m_end)
+            if "parent_id" in payload:
+                parent_id = payload.get("parent_id")
+                parent_id = str(parent_id) if parent_id else None
+                if parent_id:
+                    parent = self._find_goal(self._goals_items, parent_id)
+                    if parent is None:
+                        raise ValueError("父便签不存在")
+                    if parent.get("id") == goal_id:
+                        raise ValueError("便签不能挂到自己下面")
+                    if parent.get("kind") != "big":
+                        raise ValueError("只能挂到大便签下")
+                    if parent.get("parent_id"):
+                        raise ValueError("便签只支持两层结构")
+                    if goal.get("kind") == "big":
+                        raise ValueError("大便签不能挂到别的便签下")
+                if parent_id != goal.get("parent_id"):
+                    goal["parent_id"] = parent_id
+                    goal["order"] = self._next_goal_order(
+                        parent_id, exclude=goal_id
+                    )
+            if "kind" in fields:
+                new_kind = fields["kind"]
+                if new_kind == "big" and self._goal_has_children(goal_id):
+                    raise ValueError("大便签下还有小便签，先移出小便签")
+                if new_kind == "small" and goal.get("parent_id") and not (
+                    payload.get("parent_id") is not None
+                    or "parent_id" in payload
+                ):
+                    pass  # parent unchanged → stays a child row
+                goal["kind"] = new_kind
+            for key in (
+                "title",
+                "note",
+                "color",
+                "done",
+                "tags",
+                "scale",
+                "x",
+                "y",
+            ):
+                if key in fields:
+                    goal[key] = fields[key]
+            if "start" in fields or "end" in fields:
+                goal["start"] = m_start
+                goal["end"] = m_end
+            goal["updated_at"] = dt_str(dt.datetime.now())
+            self._save_goals()
+            return goal
+
+    def _next_goal_order(self, parent_id: Optional[str], exclude: str = "") -> int:
+        same = [
+            g
+            for g in self._goals_items
+            if g.get("id") != exclude
+            and (g.get("parent_id") or None) == parent_id
+        ]
+        return max((int(g.get("order") or 0) for g in same), default=0) + 1
+
+    def delete_goal(self, goal_id: str) -> int:
+        with self._lock:
+            goal = self._find_goal(self._goals_items, goal_id)
+            if goal is None:
+                raise KeyError(f"未找到目标 {goal_id}")
+            ids = {goal_id}
+            if not goal.get("parent_id"):
+                ids |= {
+                    g["id"]
+                    for g in self._goals_items
+                    if g.get("parent_id") == goal_id
+                }
+            self._goals_items = [g for g in self._goals_items if g["id"] not in ids]
+            self._save_goals()
+            return len(ids)
+
+    def order_goals(self, parent_id: Optional[str], ordered_ids: list[str]) -> int:
+        """同一父组内的便签排序（拖动调序）。"""
+        with self._lock:
+            group = [
+                g
+                for g in self._goals_items
+                if (g.get("parent_id") or None) == parent_id
+            ]
+            group_ids = {g["id"] for g in group}
+            given = [str(i) for i in ordered_ids]
+            if set(given) != group_ids or len(given) != len(group_ids):
+                raise ValueError("排序列表与该组目标不匹配")
+            rank = {gid: i for i, gid in enumerate(given)}
+            for g in group:
+                g["order"] = rank[g["id"]] + 1
+                g["updated_at"] = dt_str(dt.datetime.now())
+            self._save_goals()
+            return len(group)
+
+    def goals_payload(self, query: str = "", tag: str = "") -> dict:
+        """检索：query 匹配标题/备注/标签；tag 逗号分隔多标签(AND)。"""
+        with self._lock:
+            items = [dict(g) for g in self._goals_items]
+        for g in items:
+            g["tags"] = self._goal_tags(g)
+        ql = str(query or "").strip().lower()
+        wanted = [t.strip() for t in str(tag or "").split(",") if t.strip()]
+        out = []
+        for g in items:
+            if wanted and not all(t in (g.get("tags") or []) for t in wanted):
+                continue
+            if ql:
+                hay = (
+                    str(g.get("title", ""))
+                    + "\n"
+                    + str(g.get("note", ""))
+                    + "\n"
+                    + " ".join(g.get("tags") or [])
+                ).lower()
+                if ql not in hay:
+                    continue
+            out.append(g)
+        out.sort(key=lambda g: int(g.get("order") or 0))
+        counts: dict[str, int] = {}
+        for g in items:
+            for t in g.get("tags") or []:
+                counts[t] = counts.get(t, 0) + 1
+        tags = sorted(
+            ({"tag": k, "count": v} for k, v in counts.items()),
+            key=lambda x: (-x["count"], x["tag"]),
+        )
+        return {"goals": out, "tags": tags}
+
     # ── panel Web API ────────────────────────────────────────────────────
 
     def _register_apis(self) -> None:
@@ -1696,6 +2226,18 @@ class CalendarPlugin(Star):
         reg(f"/{PLUGIN_NAME}/diary/update", self._api_diary_update, ["POST"], "Update diary entry")
         reg(f"/{PLUGIN_NAME}/diary/delete", self._api_diary_delete, ["POST"], "Delete diary entry")
         reg(f"/{PLUGIN_NAME}/diary/tags", self._api_diary_tags, ["GET"], "Diary tag counts")
+        reg(f"/{PLUGIN_NAME}/goals", self._api_goals, ["GET"], "Cycles and goals")
+        reg(f"/{PLUGIN_NAME}/goals", self._api_goal_create, ["POST"], "Create goal")
+        reg(f"/{PLUGIN_NAME}/goals/update", self._api_goal_update, ["POST"], "Update goal")
+        reg(f"/{PLUGIN_NAME}/goals/delete", self._api_goal_delete, ["POST"], "Delete goal")
+        reg(f"/{PLUGIN_NAME}/goals/order", self._api_goal_order, ["POST"], "Reorder goals in a group")
+        for _removed in (
+            "/goals/reorder",
+            "/goals/cycle",
+            "/goals/cycle/update",
+            "/goals/cycle/delete",
+        ):
+            reg(f"/{PLUGIN_NAME}{_removed}", self._api_goals_removed, ["POST"], "Removed endpoint")
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminders, ["GET"], "Pending reminder cards")
         reg(f"/{PLUGIN_NAME}/reminders", self._api_reminder_action, ["POST"], "done/snooze card")
         reg(f"/{PLUGIN_NAME}/display", self._api_display, ["GET"], "Display mode status")
@@ -1829,6 +2371,74 @@ class CalendarPlugin(Star):
 
     async def _api_diary_tags(self):
         return json_response({"tags": self.diary_tags()})
+
+    # ── goals API ────────────────────────────────────────────────────────
+
+    async def _api_goals(self):
+        query = request.query.get("q", "") or ""
+        tag = request.query.get("tag", "") or ""
+        return json_response(self.goals_payload(query=query, tag=tag))
+
+    async def _api_goal_create(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        try:
+            goal = self.create_goal(body)
+        except (ValueError, TypeError) as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "goal": goal})
+
+    async def _api_goal_update(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        goal_id = str(body.pop("id", "") or "")
+        if not goal_id:
+            return error_response("缺少 id")
+        try:
+            goal = self.update_goal(goal_id, body)
+        except KeyError as exc:
+            return error_response(str(exc), status_code=404)
+        except (ValueError, TypeError) as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "goal": goal})
+
+    async def _api_goal_delete(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        goal_id = str(body.get("id", "") or "")
+        if not goal_id:
+            return error_response("缺少 id")
+        try:
+            removed = self.delete_goal(goal_id)
+        except KeyError as exc:
+            return error_response(str(exc), status_code=404)
+        return json_response({"ok": True, "removed": removed})
+
+    async def _api_goal_order(self):
+        try:
+            body = await request.json({}) or {}
+        except Exception:
+            return error_response("请求体必须是 JSON")
+        parent_id = body.get("parent_id")
+        parent_id = str(parent_id) if parent_id else None
+        ordered = body.get("ordered_ids")
+        if not isinstance(ordered, list):
+            return error_response("缺少 ordered_ids")
+        try:
+            count = self.order_goals(parent_id, ordered)
+        except ValueError as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "count": count})
+
+    async def _api_goals_removed(self):
+        # 占位：仪表盘会跨重载保留旧实例的路由，用同路径覆盖使其失效
+        return error_response("该接口已移除：便签已改为无周期白板")
 
     async def _api_reminders(self):
         return json_response({"cards": self._pending_cards()})
@@ -2061,6 +2671,9 @@ class CalendarPlugin(Star):
             ListCountdownTool(plugin=self),
             AddDiaryTool(plugin=self),
             ListDiaryTool(plugin=self),
+            AddGoalTool(plugin=self),
+            ListGoalsTool(plugin=self),
+            UpdateGoalTool(plugin=self),
             UpdateEventTool(plugin=self),
             DeleteEventTool(plugin=self),
         ]
@@ -2072,7 +2685,7 @@ class CalendarPlugin(Star):
     # Tools that resolve relative time ("明天"/"下周三") or list by date need the
     # current clock; mutation-by-id tools do not, so we skip the suffix there to
     # avoid signalling calendar relevance on every turn.
-    _TIME_SENSITIVE_TOOLS = frozenset({"create_event", "list_events", "list_countdown", "add_diary"})
+    _TIME_SENSITIVE_TOOLS = frozenset({"create_event", "list_events", "list_countdown", "add_diary", "add_goal"})
 
     def _refresh_tool_time(self) -> None:
         if not self._tools:
@@ -2245,6 +2858,110 @@ class CalendarPlugin(Star):
                 f" {tags} — {snippet}"
             )
         return f"共 {len(rows)} 篇：\n" + "\n".join(rows)
+
+    def tool_add_goal(self, **kwargs) -> str:
+        title = str(kwargs.get("title") or "").strip()
+        if not title:
+            return "创建失败：便签标题不能为空。"
+        parent_id = None
+        parent_title = str(kwargs.get("parent") or "").strip()
+        if parent_title:
+            with self._lock:
+                tops = [
+                    g
+                    for g in self._goals_items
+                    if not g.get("parent_id") and g.get("kind") == "big"
+                ]
+            hit = [g for g in tops if g.get("title") == parent_title]
+            if not hit:
+                hit = [g for g in tops if parent_title in str(g.get("title", ""))]
+            if len(hit) != 1:
+                names = "、".join(str(g.get("title", "")) for g in tops[:6]) or "（无大便签）"
+                return (
+                    f"创建失败：大便签「{parent_title}」"
+                    f"{'匹配不唯一' if hit else '不存在'}，现有大便签：{names}"
+                )
+            parent_id = hit[0]["id"]
+        payload: dict[str, Any] = {
+            "title": title,
+            "note": str(kwargs.get("note") or ""),
+            "color": str(kwargs.get("color") or "blue"),
+        }
+        for key in ("start", "end"):
+            if kwargs.get(key):
+                payload[key] = str(kwargs[key])
+        if kwargs.get("tags") is not None:
+            payload["tags"] = kwargs.get("tags")
+        if parent_id:
+            payload["parent_id"] = parent_id
+        try:
+            goal = self.create_goal(payload)
+        except (ValueError, TypeError) as exc:
+            return f"创建失败：{exc}"
+        kind = "小便签" if goal.get("kind") == "small" else "大便签"
+        tags = "、".join(f"#{t}" for t in self._goal_tags(goal)) or "无标签"
+        when = ""
+        if goal.get("start"):
+            when = f"，{goal['start']} → {goal.get('end') or goal['start']}"
+        return f"已创建{kind}「{goal['title']}」（{tags}{when}，id {goal['id']}）。"
+
+    def tool_list_goals(self, **kwargs) -> str:
+        data = self.goals_payload(
+            query=str(kwargs.get("query") or ""),
+            tag=str(kwargs.get("tag") or ""),
+        )
+        goals = data["goals"]
+        if not goals:
+            return "没有匹配的便签。"
+        tops = [g for g in goals if not g.get("parent_id")]
+        rows = [f"白板共 {len(goals)} 张便签："]
+        for top in tops:
+            kids = [g for g in goals if g.get("parent_id") == top["id"]]
+            done_n = sum(1 for k in kids if k.get("done"))
+            mark = "✓" if top.get("done") else "○"
+            line = f"  {mark} [{top['id']}] {top['title']}"
+            tags = " ".join(f"#{t}" for t in top.get("tags") or [])
+            if tags:
+                line += f" {tags}"
+            if top.get("start"):
+                line += f"（{top['start']} → {top.get('end') or top['start']}）"
+            if kids:
+                line += f"（小便签 {done_n}/{len(kids)}）"
+            rows.append(line)
+            for k in kids:
+                km = "✓" if k.get("done") else "○"
+                ktags = " ".join(f"#{t}" for t in k.get("tags") or [])
+                kline = f"     {km} [{k['id']}] {k['title']}"
+                if ktags:
+                    kline += f" {ktags}"
+                if k.get("start"):
+                    kline += f"（{k['start']} → {k.get('end') or k['start']}）"
+                rows.append(kline)
+        top_ids = {t["id"] for t in tops}
+        for g in goals:
+            if g.get("parent_id") and g.get("parent_id") not in top_ids:
+                mark = "✓" if g.get("done") else "○"
+                rows.append(f"  {mark} [{g['id']}] {g['title']}（独立小便签）")
+        return "\n".join(rows[:60])
+
+    def tool_update_goal(self, **kwargs) -> str:
+        goal_id = str(kwargs.get("id") or "").strip()
+        if not goal_id:
+            return "修改失败：缺少 id。"
+        payload: dict[str, Any] = {}
+        for key in ("title", "note", "done", "start", "end", "tags"):
+            if kwargs.get(key) is not None:
+                payload[key] = kwargs[key]
+        if not payload:
+            return "修改失败：没有提供要改的字段。"
+        try:
+            goal = self.update_goal(goal_id, payload)
+        except KeyError as exc:
+            return f"修改失败：{exc}"
+        except (ValueError, TypeError) as exc:
+            return f"修改失败：{exc}"
+        state = "已完成" if goal.get("done") else "未完成"
+        return f"已更新便签「{goal['title']}」（{state}，id {goal['id']}）。"
 
     def tool_update_event(self, **kwargs) -> str:
         event_id = str(kwargs.pop("id", "") or "")
