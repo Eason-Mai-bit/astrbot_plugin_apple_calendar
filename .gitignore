@@ -5,6 +5,7 @@ __pycache__/
 events.json
 state.json
 diary.json
+goals.json
 panel_bg.img
 panel_bg.img.tmp
 
@@ -17,6 +18,7 @@ panel_bg.img.tmp
 events*.json
 state*.json
 diary*.json
+goals*.json
 reminders*.json
 *_diary*.json
 
